@@ -4,6 +4,28 @@
 
 目前以 **Windows 10／11、64 位元 Python 3.11** 為主要執行環境。開發機使用 Python 3.11.9；其他作業系統尚未完成實機驗證。
 
+## 第一次使用：下載 → 安裝 → 開始玩
+
+**不用自己輸入指令，也不用先手動安裝 Python。**
+
+1. 在本頁上方點綠色 **Code → Download ZIP**，下載後按右鍵「全部解壓縮」。
+2. 打開解壓後的資料夾，雙擊 **`install.bat`**，等到出現綠色 **Installation complete!**。
+3. 接上攝影機，雙擊 **`start_game.bat`**，就能開始玩。
+
+| 檔案 | 什麼時候使用 |
+| --- | --- |
+| **`install.bat`** | 第一次使用、換電腦或更新套件時，雙擊安裝環境 |
+| **`start_game.bat`** | 之後每次玩遊戲，雙擊啟動 |
+| `requirements.txt` | 套件清單，由安裝檔自動讀取，不需要自己打開執行 |
+
+安裝需要網路。安裝檔會檢查 64 位元 Python 3.11；若沒有，會從 Python 官網下載並驗證安裝程式，安裝 Python 3.11.9，接著建立 `.venv` 並安裝所有必要套件。已經有可用環境時會重複利用，可再次執行。
+
+請先**完整解壓縮**，不要在 ZIP 裡直接執行，也不要只下載這兩個 `.bat`。若安裝失敗，視窗會留下錯誤訊息；處理問題後再雙擊 `install.bat`。若既有 `.venv` 不相容，先將它重新命名，再重新安裝。
+
+此儲存庫是私人的，下載前須登入有權限的 GitHub 帳號。遊戲模型、圖片、字型與音效都已包含；使用者資料會保存在本機 `data/`。
+
+以下是手動安裝與詳細操作說明；**一鍵安裝成功後，可直接跳到「5. 操作與遊戲內容」**。
+
 ## 1. 下載程式
 
 儲存庫：<https://github.com/QuailUJ/bilateral-coordination-training>
@@ -16,7 +38,7 @@
 2. 點 **Code → Download ZIP**。
 3. 將 ZIP **完整解壓縮**，例如放在 `C:\Games\bilateral-coordination-training-main`。
 4. 開啟解壓後的資料夾，確認裡面有 `main.py`、`requirements.txt`、`assets` 和 `model`。
-5. 在該資料夾空白處按右鍵，選擇「在終端機中開啟」，使用 PowerShell。
+5. 雙擊 `install.bat` 安裝，再雙擊 `start_game.bat` 啟動。若偏好手動安裝，再按照下方指令操作。
 
 ### 方法 B：使用 Git
 
@@ -31,7 +53,7 @@ cd bilateral-coordination-training
 
 ## 2. 安裝 Python
 
-1. 到 [Python 官方下載頁](https://www.python.org/downloads/windows/) 安裝 **Python 3.11 的 Windows 64-bit 版本**。
+1. 到 [Python 3.11.9 官方下載頁](https://www.python.org/downloads/release/python-3119/) 選擇 **Windows installer (64-bit)** 安裝。
 2. 安裝時勾選 **Add python.exe to PATH**，並保留 Python Launcher。
 3. 安裝完成後重新開啟 PowerShell，確認版本：
 
