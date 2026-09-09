@@ -1,0 +1,30 @@
+# Local Python environments and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Personal accounts, recordings, device settings, and local analysis
+data/
+analysis/
+CHECKPOINTS/
+*.tmp
+*.corrupt.bak
+*.log
+
+# Local editor settings and secrets
+.vscode/
+.idea/
+.env
+.env.*
+!.env.example
+Thumbs.db
+.DS_Store

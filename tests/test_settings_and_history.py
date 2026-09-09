@@ -1,0 +1,779 @@
+import os
+from types import SimpleNamespace
+
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+import pygame
+import pytest
+
+from common import game_time, audio
+from common.app_context import AppContext
+from common.camera_hand_tracker import CameraStream
+from common.scene_manager import SceneManager
+from data_store import settings_store, user_store
+from scenes.history_scene import HistoryScene
+from scenes.login_scene import LoginScene
+
+
+@pytest.fixture
+def ctx(tmp_path, monkeypatch):
+    pygame.init()
+    monkeypatch.setattr(user_store, "_default_base_dir", lambda: str(tmp_path / "users"))
+    monkeypatch.setattr(settings_store, "settings_path", lambda: str(tmp_path / "settings.json"))
+    context = AppContext(pygame.display.set_mode((1440, 900)), pygame.time.Clock(),
+                         CameraStream(None), None, current_user="test")
+    yield context
+    game_time.resume()
+    audio._sounds.clear()
+    from ui.theme import _font_cache
+    _font_cache.clear()
+    pygame.quit()
+
+
+def test_settings_roundtrip_and_invalid_values(tmp_path):
+    path = str(tmp_path / "settings.json")
+    settings_store.save_settings(2, 0.3, path)
+    assert settings_store.load_settings(path) == {"camera_index": 2, "volume": 0.3}
+    (tmp_path / "settings.json").write_text('{"camera_index": -2, "volume": 9}')
+    assert settings_store.load_settings(path) == {"camera_index": 0, "volume": 1.0}
+
+
+def test_login_escape_settings_preserves_input_and_saves(ctx):
+    manager = SceneManager(ctx)
+    manager.push(LoginScene())
+    manager.current.text_input.text = "unfinished"
+    escape = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE)
+    manager.handle_event(escape)
+    assert manager._settings is not None
+    manager._settings._volume(ctx, -0.4)
+    manager.update(0.1)
+    manager.draw(ctx.screen)
+    manager.handle_event(escape)
+    assert manager._settings is None
+    assert manager.current.text_input.text == "unfinished"
+    assert settings_store.load_settings()["volume"] == 0.6
+
+
+def test_pause_excludes_settings_time(monkeypatch):
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(game_time._clock, "time", lambda: clock.now)
+    monkeypatch.setattr(game_time, "_offset", 0.0)
+    monkeypatch.setattr(game_time, "_paused_at", None)
+    game_time.pause()
+    clock.now += 50
+    assert game_time.time() == 100
+    game_time.resume()
+    clock.now += 3
+    assert game_time.time() == 103
+
+
+def test_delete_confirmation_refreshes_chart_and_best(ctx):
+    for score in (10, 90):
+        user_store.append_history_record("test", "game1_bilateral_vertical", score, {})
+    user_store.append_history_record("other", "game1_bilateral_vertical", 99, {})
+    scene = HistoryScene()
+    scene.on_enter(ctx)
+    scene._on_filter_selected("game1_bilateral_vertical")
+    scene._on_mode_selected("best_scores")
+    scene.update(ctx, 0)
+    scene._on_record_selected(scene.list_view.records[0])
+    assert scene.selected_record["score"] == 90
+    scene._delete(ctx)
+    scene.draw(ctx, ctx.screen)
+    assert len(user_store.create_or_load_user("test")["history"]) == 2
+    scene._cancel_selection()
+    assert len(user_store.create_or_load_user("test")["history"]) == 2
+    scene._on_record_selected(scene.list_view.records[0])
+    scene._delete(ctx)
+    scene._delete(ctx)
+    assert scene.chart_values == [10]
+    assert scene.list_view.records[0]["score"] == 10
+    assert len(user_store.create_or_load_user("other")["history"]) == 1
+    record = scene.list_view.records[0]
+    assert user_store.delete_history_record("test", record["record_id"])
+    assert not user_store.delete_history_record("test", record["record_id"])
+    scene._reload(ctx)
+    assert scene.list_view.items == []
+
+
+def test_failed_camera_switch_preserves_original(ctx, monkeypatch):
+    from common import camera_hand_tracker
+    original = ctx.camera
+    def fail(**kwargs):
+        raise RuntimeError("camera unavailable")
+    monkeypatch.setattr(camera_hand_tracker, "open_camera", fail)
+    with pytest.raises(RuntimeError):
+        ctx.switch_camera(3)
+    assert ctx.camera is original
+    assert ctx.camera_index == 0
+
+
+def test_successful_camera_switch_releases_old_camera(ctx, monkeypatch):
+    from common import app_context, camera_hand_tracker
+    old_cap = SimpleNamespace(released=False)
+    old_cap.release = lambda: setattr(old_cap, "released", True)
+    ctx.camera = CameraStream(old_cap)
+    new_cap = object()
+    monkeypatch.setattr(camera_hand_tracker, "open_camera", lambda **kw: (new_cap, "fake"))
+    stream = SimpleNamespace(cap=new_cap, start=lambda: stream,
+                             get_next=lambda *a, **kw: (object(), 1, 0))
+    monkeypatch.setattr(app_context, "CameraStream", lambda cap: stream)
+    ctx.switch_camera(2)
+    assert ctx.camera is stream
+    assert ctx.camera_index == 2
+    assert old_cap.released
+
+
+def test_volume_applies_to_cached_and_new_sounds(ctx):
+    from common.paths import resource_path
+    audio.set_volume(0.4)
+    first = audio.load_sound(resource_path("assets/sound/correct.wav"))
+    assert first.get_volume() == pytest.approx(0.4, abs=0.01)
+    audio.set_volume(0)
+    second = audio.load_sound(resource_path("assets/sound/correct.wav"))
+    assert first.get_volume() == second.get_volume() == 0
+
+
+def test_finger_scene_index_motion_finishes_at_ten_pairs(ctx, monkeypatch):
+    import copy
+    import numpy as np
+    from test_game2_finger_motion import landmarks
+    from games.game2_finger_vertical.scene import Game2Scene
+
+    scene = Game2Scene()
+    scene.on_enter(ctx)
+    scene.selected_action = {"combo_id": "VV", "left": "V", "right": "V", "label": "雙手垂直"}
+    scene._start_playing(0)
+    timer = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(game_time, "time", lambda: timer.now)
+    frame = np.zeros((640, 640, 3), dtype=np.uint8)
+    closed, opened = landmarks(), landmarks(True)
+
+    def process(amount, frames=1):
+        for _ in range(frames):
+            left = copy.deepcopy(closed)
+            for i in range(21):
+                left[i].x += (opened[i].x - closed[i].x) * amount - 0.22
+                left[i].y += (opened[i].y - closed[i].y) * amount
+            right = copy.deepcopy(left)
+            for p in right:
+                p.x += 0.44
+            result = SimpleNamespace(hand_landmarks=[left, right], handedness=[
+                [SimpleNamespace(category_name="Left", score=0.99)],
+                [SimpleNamespace(category_name="Right", score=0.99)]])
+            detector = SimpleNamespace(detect=lambda image: result)
+            timer.now += 0.05
+            scene._process_frame(frame.copy(), detector)
+            scene._advance_state(ctx)
+
+    process(0, 10)
+    for rep in range(10):
+        for step in range(1, 11):
+            process(step / 10)
+        process(1, 5)
+        for step in range(9, -1, -1):
+            process(step / 10)
+        process(0, 10)
+        assert scene.sync_tracker.completed_pairs == rep + 1
+        assert scene.state == ("result" if rep == 9 else "playing")
+    history = user_store.create_or_load_user("test")["history"]
+    assert len(history) == 1
+    assert len(history[0]["details"]["reps"]) == 20
+    analysis = history[0]["details"]["analysis"]
+    assert analysis["version"] == 1
+    assert analysis["tip_landmark"] == 8
+    frames = analysis["frames"]
+    assert frames[-1]["paired"] == 10
+    assert frames[-1]["left"]["completed"] == 10
+    assert all(a["t"] <= b["t"] for a, b in zip(frames, frames[1:]))
+    assert any("pip_angle" in frame["left"]["metrics"] for frame in frames)
+    assert frames[-1]["pair_detail"] is not None
+    from scenes.replay_scene import ReplayScene
+    replay = ReplayScene()
+    replay.on_enter(ctx, history[0])
+    replay._seek(frames[len(frames)//2]["t"])
+    replay.draw(ctx, ctx.screen)
+    assert replay.frames[replay._current_frame_index()]["t"] <= replay.playback_t
+    assert replay.duration > 2.5
+
+
+def test_all_finger_combinations_finish_after_ten_even_with_low_similarity(ctx):
+    from games.game1_bilateral_vertical.config import ACTION_SETS
+    from games.game2_finger_vertical.scene import Game2Scene
+    for action in ACTION_SETS:
+        scene = Game2Scene()
+        scene.on_enter(ctx)
+        scene.selected_action = action
+        scene._start_playing(0)
+        for rep in range(9):
+            scene.sync_tracker.on_left_rep(rep, 0.5, 0)
+            scene.sync_tracker.on_right_rep(rep + 10, 5, 0)
+        scene._advance_state(ctx)
+        assert scene.state == "playing"
+        scene.sync_tracker.on_left_rep(9, 0.5, 0)
+        scene.sync_tracker.on_right_rep(19, 5, 0)
+        scene._advance_state(ctx)
+        assert scene.state == "result"
+
+
+def test_game_zero_mislabeled_right_discards_only_unfinished_left(ctx, monkeypatch):
+    import numpy as np
+    from test_hand_identity import acquire, result
+    from games.game1_bilateral_vertical.scene import Game1Scene
+    scene = Game1Scene()
+    scene.on_enter(ctx)
+    scene.selected_action = {"combo_id": "VV", "left": "V", "right": "V", "label": "雙手垂直"}
+    scene._start_playing(0)
+    left, right = acquire(scene.hand_identity)
+    scene.left_recognizer.completed = 2
+    scene.left_recognizer.half_swings = 1
+    scene.left_trail.append((0.75, 0.5))
+    scene.trail_recorder.record_left_point((0.75, 0.5))
+    scene.trail_recorder.finish_left_rep()
+    scene.trail_recorder.record_left_point((0.74, 0.5))
+    monkeypatch.setattr(game_time, "time", lambda: 0.1)
+    detector = SimpleNamespace(detect=lambda image: result(("Left", right)))
+    scene._process_frame(np.zeros((480, 640, 3), dtype=np.uint8), detector)
+    assert scene.left_landmarks is None
+    assert not scene.left_trail
+    assert scene.left_recognizer.completed == 2
+    assert scene.left_recognizer.half_swings == 0
+    assert scene.trail_recorder._current_left == []
+    assert scene.trail_recorder._pending_left == [[[0.75, 0.5]]]
+    logged = scene.diagnostics["frames"][-1]
+    assert logged["left"]["tracking"]["accepted"] is False
+    assert logged["left"]["tracking"]["reason"] in ("wrist_jump", "identity_conflict")
+    assert logged["left"]["tracking"]["raw_tip"] == [0.25, 0.5]
+    assert logged["left"]["tip"] is None
+    assert logged["left"]["interruptions"] == 1
+
+
+def test_camera_gap_records_reason_without_recounting_one_interruption(ctx, monkeypatch):
+    import json
+    from games.game1_bilateral_vertical.scene import Game1Scene
+    from common.training_diagnostics import export_diagnostics
+    scene = Game1Scene()
+    scene.on_enter(ctx)
+    scene.selected_action = {"combo_id": "VV", "left": "V", "right": "V", "label": "雙手垂直"}
+    scene._start_playing(0)
+    scene.last_sample_time = 0
+    monkeypatch.setattr(game_time, "time", lambda: 1.0)
+    scene.update(ctx, 0.1)
+    monkeypatch.setattr(game_time, "time", lambda: 1.2)
+    scene.update(ctx, 0.1)
+    analysis = json.loads(json.dumps(export_diagnostics(scene, ctx), allow_nan=False))
+    assert len(analysis["frames"]) == 2
+    assert analysis["frames"][-1]["source"] == "camera_gap"
+    assert analysis["frames"][-1]["left"]["tracking"]["reason"] == "camera_gap"
+    assert analysis["frames"][-1]["left"]["interruptions"] == 1
+
+
+def test_fist_short_loss_preserves_progress_long_loss_resets_and_replay_draws(ctx, monkeypatch):
+    import json
+    import numpy as np
+    from test_hand_identity import acquire, result
+    from games.game1_bilateral_vertical.scene import Game1Scene
+    from common.training_diagnostics import export_diagnostics
+    from scenes.replay_scene import ReplayScene
+    scene = Game1Scene()
+    scene.on_enter(ctx)
+    scene.selected_action = {"combo_id": "VV", "left": "V", "right": "V", "label": "雙手垂直"}
+    scene._start_playing(0)
+    left, right = acquire(scene.hand_identity)
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    def feed(t, detections):
+        monkeypatch.setattr(game_time, "time", lambda: t)
+        scene._process_frame(frame.copy(), SimpleNamespace(detect=lambda image: result(*detections)))
+    feed(0.1, [("Left", left), ("Right", right)])
+    # Rendering also works before the fixed reference has been calibrated.
+    replay = ReplayScene()
+    replay.on_enter(ctx, {"details": {"analysis": export_diagnostics(scene, ctx)}})
+    replay.draw(ctx, ctx.screen)
+    feed(0.41, [("Left", left), ("Right", right)])
+    recognizer = scene.left_recognizer
+    recognizer.half_swings = 1
+    recognizer.completed = 2
+    feed(0.44, [("Right", right)])
+    assert scene.left_recognizer is recognizer
+    assert recognizer.half_swings == 1
+    assert scene.debug_snapshot["left"]["tip"] is None
+    for t in (0.47, 0.50, 0.53):
+        feed(t, [("Left", left), ("Right", right)])
+    assert scene.left_recognizer is recognizer
+    assert recognizer.half_swings == 1
+    assert scene.debug_snapshot["left"]["reference"] is None
+    assert scene.debug_snapshot["left"]["metrics"]["recognition"] == "reversal"
+    scene.draw(ctx, ctx.screen)
+    feed(0.56, [("Right", right)])
+    feed(0.95, [("Right", right)])
+    assert scene.left_recognizer is not recognizer
+    assert scene.left_recognizer.completed == 2
+    assert scene.left_recognizer.half_swings == 0
+    analysis = json.loads(json.dumps(export_diagnostics(scene, ctx), allow_nan=False))
+    assert analysis["tracking_point_kind"] == "palm_center"
+    replay.on_enter(ctx, {"details": {"analysis": analysis}})
+    replay.playback_t = 0.53
+    replay.draw(ctx, ctx.screen)
+
+
+def test_legacy_replay_remains_available_and_buttons_do_not_overlap(ctx):
+    from scenes.replay_scene import ReplayScene
+    record = {"details": {"level_id": "VV", "reps": [
+        {"round": 1, "hand": "left", "score": 23, "trail": [[0.3, 0.2], [0.3, 0.7]]},
+        {"round": 1, "hand": "right", "score": 23, "trail": [[0.7, 0.2], [0.7, 0.7]]}]}}
+    replay = ReplayScene()
+    replay.on_enter(ctx, record)
+    replay.draw(ctx, ctx.screen)
+    assert not replay.frames
+    assert replay.duration == 2.5
+    buttons = [replay.prev_button, replay.next_button, replay.pause_button, replay.replay_button, replay.speed_button]
+    assert all(not a.rect.colliderect(b.rect) for i, a in enumerate(buttons) for b in buttons[i+1:])
+
+
+def test_analysis_only_record_is_replayable_and_scrubbing_is_synchronized(ctx, monkeypatch):
+    from common.training_diagnostics import record_diagnostics, export_diagnostics
+    from games.game1_bilateral_vertical.scene import Game1Scene
+    from scenes.history_scene import _replay_payload
+    from scenes.replay_scene import ReplayScene
+    scene = Game1Scene()
+    scene.on_enter(ctx)
+    scene.selected_action = {"combo_id": "VH", "left": "V", "right": "H", "label": "左垂直右水平"}
+    scene._start_playing(0)
+    for t, left_count, right_count in [(0, 0, 0), (1, 3, 0), (4, 3, 1)]:
+        scene.left_recognizer.completed = left_count
+        scene.right_recognizer.completed = right_count
+        record_diagnostics(scene, t)
+    record = {"details": {"level_id": "VH", "analysis": export_diagnostics(scene, ctx)}}
+    assert _replay_payload(record) is record
+    replay = ReplayScene()
+    replay.on_enter(ctx, record)
+    replay._seek(2)
+    frame = replay.frames[replay._current_frame_index()]
+    assert frame["left"]["completed"] == 3
+    assert frame["right"]["completed"] == 0
+    replay._next_round()
+    assert replay.playback_t == 4
+    assert not replay.playing
+    replay._prev_round()
+    assert replay.playback_t == 1
+    replay.speed = 0.5
+    replay.playing = True
+    replay.update(ctx, 1)
+    assert replay.playback_t == 1.5
+    replay.handle_event(ctx, pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=replay.timeline_rect.center))
+    assert replay.playback_t == pytest.approx(2, abs=0.01)
+    assert not replay.playing
+    replay.draw(ctx, ctx.screen)
+
+
+def test_live_camera_stays_between_side_panels(ctx):
+    import numpy as np
+    from ui.training_panels import training_layout
+    from games.game1_bilateral_vertical.scene import Game1Scene
+    scene = Game1Scene()
+    scene.display_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    video = scene._draw_camera_feed(ctx.screen, *ctx.screen.get_size())
+    left, center, right = training_layout(ctx.screen.get_size())
+    assert center.contains(video)
+    assert not left.colliderect(video)
+    assert not right.colliderect(video)
+
+
+def test_fist_has_independent_hand_choices_and_finger_keeps_existing_menu(ctx):
+    from games.game1_bilateral_vertical.scene import Game1Scene
+    from games.game2_finger_vertical.scene import Game2Scene
+    scenes = [Game1Scene(), Game2Scene()]
+    for scene in scenes:
+        scene.on_enter(ctx)
+        scene._on_guide_dismissed()
+        assert scene.state == "level_select"
+    assert scenes[0].level_options == scenes[1].level_options
+    assert len(scenes[1].level_options) == 16
+    assert scenes[1].level_select_widget.columns == 2
+    selector = scenes[0].level_select_widget
+    assert len(selector.buttons) == 10
+    for left in ("N", "V", "H", "CW", "CCW"):
+        for right in ("N", "V", "H", "CW", "CCW"):
+            selector.choose("left", left)
+            selector.choose("right", right)
+            assert selector.start.enabled == (left != "N" or right != "N")
+            if selector.start.enabled:
+                selector.start.on_click()
+                assert scenes[0].selected_action["left"] == left
+                assert scenes[0].selected_action["right"] == right
+    selector.choose("left", "N")
+    selector.choose("right", "V")
+    scenes[0].state = "level_select"
+    scenes[0].draw(ctx, ctx.screen)
+    for option in scenes[1].level_options:
+        scenes[1]._on_level_selected(option["level_id"])
+        assert scenes[1].selected_action["combo_id"] == option["level_id"]
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize("action", ["H", "V"])
+def test_single_hand_only_in_camera_finishes_ten_and_replays(ctx, monkeypatch, side, action):
+    import numpy as np
+    from test_hand_identity import hand, result
+    from games.game1_bilateral_vertical.scene import Game1Scene, GAME_ID
+    from scenes.replay_scene import ReplayScene
+    scene = Game1Scene()
+    scene.on_enter(ctx)
+    other = "right" if side == "left" else "left"
+    scene._on_actions_selected({side: action, other: "N"})
+    scene._start_playing(0)
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    def feed(t, offset):
+        monkeypatch.setattr(game_time, "time", lambda: t)
+        lm = hand(.3 + (offset if action == "H" else 0), .4 + (offset if action == "V" else 0))
+        scene._process_frame(frame.copy(), SimpleNamespace(detect=lambda image: result((side.title(), lm))))
+        scene._advance_state(ctx)
+    for i in range(3):
+        feed(i * .03, 0)
+    assert getattr(scene, side + "_landmarks") is not None
+    t = .4
+    for _ in range(10):
+        feed(t, .12)
+        feed(t+.3, 0)
+        t += .6
+    feed(t, .12)
+    assert scene.state == "result"
+    assert scene.session_result.score == 10
+    assert scene.tracking_interruptions[other] == 0
+    record = user_store.get_history_for_game(ctx.current_user, GAME_ID, limit=1)[0]
+    assert record["details"]["training_mode"] == "single"
+    assert record["details"]["enabled_hands"] == [side]
+    assert record["details"]["analysis"]["frames"][-1][other]["tip"] is None
+    scene.draw(ctx, ctx.screen)
+    replay = ReplayScene()
+    replay.on_enter(ctx, record)
+    replay.draw(ctx, ctx.screen)
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize("action", ["CW", "CCW"])
+def test_single_circle_only_in_camera_finishes_ten(ctx, monkeypatch, side, action):
+    import math
+    import numpy as np
+    from test_hand_identity import hand, result
+    from games.game1_bilateral_vertical.scene import Game1Scene
+    scene = Game1Scene()
+    scene.on_enter(ctx)
+    other = "right" if side == "left" else "left"
+    scene._on_actions_selected({side: action, other: "N"})
+    scene._start_playing(0)
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    def feed(t, x, y):
+        monkeypatch.setattr(game_time, "time", lambda: t)
+        scene._process_frame(frame.copy(), SimpleNamespace(detect=lambda image: result((side.title(), hand(1-x, y)))))
+        scene._advance_state(ctx)
+    for i in range(15):
+        feed(i*.03, .3, .28)
+    sign = 1 if action == "CW" else -1
+    for i in range(1, 12*120):
+        angle = -math.pi/2 + sign*i/120*math.tau
+        feed(.45+i*.03, .3+.12*math.cos(angle), .4+.12*math.sin(angle))
+        if i == 110:  # 330 degrees: no early credit or disappearing tail.
+            assert getattr(scene, side + "_recognizer").completed == 0
+            assert len(getattr(scene, side + "_trail")) > 100
+            scene.draw(ctx, ctx.screen)
+        if i == 120:
+            assert getattr(scene, side + "_recognizer").completed == 0
+            assert len(getattr(scene, side + "_trail")) > 120
+        if i == 135:
+            assert getattr(scene, side + "_recognizer").completed == 1
+            assert len(getattr(scene, side + "_trail")) < 30
+        if scene.state == "result":
+            break
+    assert scene.state == "result"
+    assert scene.sync_tracker.score == 10
+    assert scene.session_result.score > 99
+    assert scene.tracking_interruptions[other] == 0
+
+
+def test_login_circle_trial_five_loops_save_quality_and_replay(ctx, monkeypatch):
+    import math
+    import numpy as np
+    from test_hand_identity import hand, result
+    from scenes.circle_trial_scene import CircleTrialScene
+    from games.game1_bilateral_vertical.scene import GAME_ID
+    login = LoginScene()
+    login.on_enter(ctx)
+    login._submit_trial()
+    assert login.error_message
+    assert login.update(ctx, .01) is None
+    login.text_input.text = "trial_user"
+    login._submit_trial()
+    transition = login.update(ctx, .01)
+    assert transition.kind == "push"
+    assert isinstance(transition.scene, CircleTrialScene)
+    assert ctx.current_user == "trial_user"
+    scene = transition.scene
+    scene.on_enter(ctx)
+    scene.draw(ctx, ctx.screen)
+    scene._start_playing(0)
+    frame = np.zeros((480,640,3),dtype=np.uint8)
+    for i in range(700):
+        t=i/30
+        angle=-math.pi/2+max(0,i-5)*math.tau/120
+        x=.35+.06*math.cos(angle)+.02*max(0,i-5)/120
+        y=.4+.06*math.sin(angle)
+        monkeypatch.setattr(game_time,"time",lambda:t)
+        scene._process_frame(frame.copy(), SimpleNamespace(detect=lambda image:result(("Right",hand(1-x,y)))))
+        scene._advance_state(ctx)
+        if scene.state == "result":
+            break
+    assert scene.state == "result"
+    assert len(scene.circle_records) == 5
+    record=user_store.get_history_for_game(ctx.current_user,GAME_ID,limit=1)[0]
+    assert record["details"]["analysis"]["target_pairs"] == 5
+    assert record["details"]["completed_circles"] == 5
+    assert len(record["details"]["reps"]) == 5
+    assert record["score"] > 70
+    scene.draw(ctx,ctx.screen)
+    scene._replay()
+    replay = scene._pending_transition.scene
+    replay.on_enter(ctx,record=record)
+    replay.playback_t = replay.duration
+    replay.draw(ctx,ctx.screen)
+
+
+def test_trial_loss_recreates_trial_algorithm_preserving_completed_count(ctx):
+    from scenes.circle_trial_scene import CircleTrialScene
+    from games.game1_bilateral_vertical.circle_trial_motion import UpperReversalCircle
+    from common.training_tracking import interrupt_hand
+    scene=CircleTrialScene()
+    scene.on_enter(ctx)
+    scene._start_playing(0)
+    scene.right_recognizer.completed=2
+    interrupt_hand(scene,"right",scene.make_recognizer)
+    assert isinstance(scene.right_recognizer,UpperReversalCircle)
+    assert scene.right_recognizer.completed==2
+
+
+@pytest.mark.parametrize("left_action,right_action", [("CW","CW"),("CW","CCW"),("CCW","CW"),("CCW","CCW")])
+def test_formal_bilateral_circles_ten_pairs_save_each_hand(ctx,monkeypatch,left_action,right_action):
+    import math
+    import numpy as np
+    from test_hand_identity import hand,result
+    from games.game1_bilateral_vertical.scene import Game1Scene,GAME_ID
+    scene=Game1Scene();scene.on_enter(ctx)
+    scene._on_actions_selected({"left":left_action,"right":right_action});scene._start_playing(0)
+    frame=np.zeros((80,100,3),dtype=np.uint8)
+    for i in range(1350):
+        t=i/30
+        monkeypatch.setattr(game_time,"time",lambda:t)
+        detections=[]
+        for side,action,cx,radius in [("Left",left_action,.25,.04),("Right",right_action,.75,.06)]:
+            angle=-math.pi/2+(1 if action=="CW" else -1)*max(0,i-5)*math.tau/120
+            x=cx+radius*math.cos(angle);y=.4+radius*math.sin(angle)
+            detections.append((side,hand(1-x,y)))
+        scene._process_frame(frame.copy(),SimpleNamespace(detect=lambda image:result(*detections)))
+        scene._advance_state(ctx)
+        if scene.state=="result":break
+    assert scene.state=="result"
+    assert scene.sync_tracker.completed_pairs==10
+    record=user_store.get_history_for_game(ctx.current_user,GAME_ID,limit=1)[0]
+    details=record["details"]
+    assert details["analysis"]["reference_kind"]=="observed_top_reversal"
+    assert len(details["reps"])==20
+    for side in ("left","right"):
+        laps=details["circle_records"][side]
+        assert len(laps)>=10
+        assert all(r["hand"]==side and r["quality"]>99 for r in laps)
+        assert laps[1]["start_t"]==pytest.approx(laps[0]["end_t"])
+    from scenes.replay_scene import ReplayScene
+    replay=ReplayScene();replay.on_enter(ctx,record);replay.draw(ctx,ctx.screen)
+
+
+@pytest.mark.parametrize("circle_side",["left","right"])
+@pytest.mark.parametrize("direction",["CW","CCW"])
+@pytest.mark.parametrize("axis",["H","V"])
+def test_mixed_modes_use_same_circle_algorithm(ctx,circle_side,direction,axis):
+    from games.game1_bilateral_vertical.scene import Game1Scene
+    from games.game1_bilateral_vertical.circle_trial_motion import UpperReversalCircle
+    scene=Game1Scene();scene.on_enter(ctx)
+    other="right" if circle_side=="left" else "left"
+    scene._on_actions_selected({circle_side:direction,other:axis});scene._start_playing(0)
+    recognizer=getattr(scene,circle_side+"_recognizer")
+    assert isinstance(recognizer,UpperReversalCircle)
+    assert recognizer.direction==direction
+    from common.training_tracking import interrupt_hand
+    interrupt_hand(scene,circle_side,scene.make_recognizer)
+    assert getattr(scene,circle_side+"_recognizer").direction==direction
+
+
+def test_user_deletion_requires_confirmation_and_clears_only_selected_data(ctx):
+    from pathlib import Path
+    from scenes.user_management_scene import UserManagementScene
+    for name in ("test", "other"):
+        user_store.append_history_record(name, "game1_bilateral_vertical", 10, {"reps": [1]})
+    path = user_store.user_file_path("test")
+    for suffix in (".tmp", ".corrupt.bak"):
+        Path(path+suffix).write_text("backup")
+    scene = UserManagementScene()
+    scene.on_enter(ctx)
+    scene._select("test")
+    scene.handle_event(ctx, pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE))
+    assert Path(path).exists()
+    scene._select("test")
+    scene._delete(ctx)
+    assert ctx.current_user is None
+    assert all(not Path(path+suffix).exists() for suffix in ("", ".tmp", ".corrupt.bak"))
+    assert len(user_store.create_or_load_user("other")["history"]) == 1
+    assert "test" not in user_store.list_known_display_names()
+
+
+def test_settings_delete_current_user_returns_to_login(ctx):
+    from scenes.main_menu_scene import MainMenuScene
+    user_store.append_history_record("test", "game1_bilateral_vertical", 1, {})
+    manager = SceneManager(ctx)
+    manager.push(MainMenuScene())
+    manager._open_settings()
+    settings = manager._settings
+    settings._manage_users(ctx)
+    settings.user_management._select("test")
+    settings.user_management._delete(ctx)
+    escape = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE)
+    manager.handle_event(escape)  # Return from user manager.
+    manager.handle_event(escape)  # Save and close settings.
+    assert isinstance(manager.current, LoginScene)
+    assert "test" not in manager.current.known_usernames
+
+
+def test_saber_replay_records_hit_miss_and_actual_score(ctx, monkeypatch):
+    from games.game3_lightsaber_marble import scene as module
+    from scenes.replay_scene import ReplayScene
+    from scenes.history_scene import _replay_payload
+    monkeypatch.setattr(module, "_get_sound", lambda key: None)
+    scene = module.Game3Scene()
+    scene.on_enter(ctx)
+    scene.selected_level = dict(scene.level_options[0])
+    scene._start_playing(0)
+    scene.next_spawn_at = 999
+    scene.left_sword.active = True
+    scene.left_sword.angle_deg = 90
+    hit = module.Marble(scene.pivot, 90, scene.inner_radius*1.2, scene.inner_radius, 0, None, None)
+    miss = module.Marble(scene.pivot, 30, scene.inner_radius*0.9, scene.inner_radius, 0, None, None)
+    scene.marbles.add(hit, miss)
+    scene._update_playing(ctx, 0, 1)
+    scene._finish_playing(ctx)
+    record = user_store.create_or_load_user("test")["history"][-1]
+    data = record["details"]["arcade_replay"]
+    assert [event["delta"] for event in data["events"]] == [module.cfg.HIT_SCORE, 0]
+    assert sum(event["delta"] for event in data["events"]) == record["score"]
+    assert data["events"][0]["side"] == "right"
+    assert data["events"][0]["object_id"] != data["events"][1]["object_id"]
+    assert _replay_payload(record) is record
+    replay = ReplayScene()
+    replay.on_enter(ctx, record)
+    replay._select_score_event(data["events"][0])
+    assert replay.playback_t == 1
+    assert not replay.playing
+    replay.draw(ctx, ctx.screen)
+
+
+def test_triangle_replay_lists_all_score_and_combo_outcomes(ctx, monkeypatch):
+    from games.game4_bilateral_press import scene as module
+    from common.arcade_recording import record_triangles
+    from scenes.replay_scene import ReplayScene
+    monkeypatch.setattr(module, "_get_sound", lambda key: None)
+    scene = module.Game4Scene()
+    scene.on_enter(ctx)
+    scene.selected_level = dict(scene.level_options[0])
+    scene._start_playing(0)
+    width = ctx.screen.get_width()
+    for i, (color, pressed) in enumerate((("blue", True), ("red", True), ("blue", False), ("red", False))):
+        tri = module.Triangle("left", color, 0)
+        tri.distance_px = width * (module.cfg.PADDLE_OFFSET_RATIO + module.cfg.HIT_WINDOW_RATIO + 0.01)
+        scene.triangles = [tri]
+        scene._resolve_triangles("left", pressed, width, now=i+1)
+        record_triangles(scene, i+1)
+    scene._finish_playing(ctx)
+    record = user_store.create_or_load_user("test")["history"][-1]
+    data = record["details"]["arcade_replay"]
+    assert [event["delta"] for event in data["events"]] == [1, -1, 0, 0]
+    assert data["events"][1]["combo_before"] == 1
+    assert data["events"][1]["combo_after"] == 0
+    assert sum(event["delta"] for event in data["events"]) == record["score"]
+    replay = ReplayScene()
+    replay.on_enter(ctx, record)
+    assert len(replay.event_list.records) == 4
+    replay._select_score_event(data["events"][1])
+    assert replay.frames[replay._current_frame_index()]["score"] == 0
+    replay.draw(ctx, ctx.screen)
+
+
+@pytest.mark.parametrize("game", [0,1,2,3,4])
+def test_every_camera_scene_keeps_updating_while_result_save_is_pending(ctx,monkeypatch,game):
+    import json
+    import numpy as np
+    from concurrent.futures import Future
+    from games.game1_bilateral_vertical.scene import Game1Scene
+    from games.game2_finger_vertical.scene import Game2Scene
+    from games.game3_lightsaber_marble.scene import Game3Scene
+    from games.game4_bilateral_press.scene import Game4Scene
+    from scenes.circle_trial_scene import CircleTrialScene
+    future=Future();calls=[]
+    def save(*args):
+        calls.append(args)
+        return future
+    ctx.persistence=SimpleNamespace(save_result=save)
+    scene=[Game1Scene,Game2Scene,Game3Scene,Game4Scene,CircleTrialScene][game]()
+    scene.on_enter(ctx)
+    if game in (0,1):
+        scene.selected_action={"combo_id":"VV","left":"V","right":"V","label":"雙手垂直"}
+    elif game in (2,3):
+        scene.selected_level=dict(scene.level_options[0])
+    scene._start_playing(0)
+    scene._finish_playing(ctx)
+    assert scene.state=="settling"
+    before=json.dumps(calls[0][3],sort_keys=True)
+    camera_count=[0]
+    def next_frame(last_id,timeout=0):
+        camera_count[0]+=1
+        return np.full((80,100,3),camera_count[0],dtype=np.uint8),camera_count[0],0
+    ctx.camera=SimpleNamespace(get_next=next_frame)
+    ctx.landmarker=SimpleNamespace(detect=lambda image:SimpleNamespace(hand_landmarks=[],handedness=[]))
+    manager=SceneManager(ctx);manager._stack.append(scene)
+    for _ in range(3):
+        manager.update(.03)
+        manager.draw(ctx.screen)
+    assert camera_count[0]==3
+    assert scene.state=="settling"
+    assert len(calls)==1
+    assert json.dumps(calls[0][3],sort_keys=True)==before
+    assert scene.display_frame[0,0,0]==3
+    future.set_result({})
+    manager.update(.03)
+    assert scene.state=="result"
+    assert camera_count[0]==4
+
+
+def test_login_background_load_does_not_rewrite_existing_user(ctx,monkeypatch):
+    import threading
+    from pathlib import Path
+    from common.background_persistence import BackgroundPersistence
+    user_store.save_user(user_store.create_or_load_user("test"))
+    path=Path(user_store.user_file_path("test"))
+    before=(path.stat().st_mtime_ns,path.read_bytes())
+    started=threading.Event();release=threading.Event()
+    original=user_store.create_or_load_user
+    def delayed(*args,**kwargs):
+        started.set()
+        assert release.wait(3)
+        return original(*args,**kwargs)
+    monkeypatch.setattr(user_store,"create_or_load_user",delayed)
+    service=BackgroundPersistence();ctx.persistence=service
+    try:
+        scene=LoginScene();scene.on_enter(ctx)
+        scene._login_as("test")
+        assert started.wait(1)
+        assert scene.update(ctx,.03) is None
+        scene.draw(ctx,ctx.screen)
+        release.set();scene._login_future.result(timeout=3)
+        assert scene.update(ctx,.03).kind=="replace"
+        assert (path.stat().st_mtime_ns,path.read_bytes())==before
+    finally:
+        release.set();service.close()
