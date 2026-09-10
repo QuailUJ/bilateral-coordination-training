@@ -81,10 +81,15 @@ try {
     Write-Host '[4/4] Checking installation...'
     & $venvPython -m pip check
     if ($LASTEXITCODE -ne 0) { throw 'Package compatibility check failed.' }
-    & $venvPython -c 'import pygame, cv2, mediapipe, numpy, PIL; import main'
+    & $venvPython -c 'import pygame, cv2, mediapipe, numpy, PIL; import main, elbow_angle_tracker'
     if ($LASTEXITCODE -ne 0) { throw 'Application import check failed.' }
+    foreach ($model in @('model\hand_landmarker.task', 'model\pose_landmarker_full.task')) {
+        if (-not (Test-Path -LiteralPath $model -PathType Leaf)) {
+            throw "Missing model: $model. Extract the entire project ZIP again."
+        }
+    }
     Write-Host ''
-    Write-Host 'Installation complete! Double-click start_game.bat to play.' -ForegroundColor Green
+    Write-Host 'Installation complete! Double-click start_game.bat or start_elbow.bat.' -ForegroundColor Green
     exit 0
 } catch {
     Write-Host ''
