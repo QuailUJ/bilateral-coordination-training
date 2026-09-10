@@ -1,5 +1,5 @@
 """
-main.py - 復健訓練遊戲平台 進入點
+main.py - 雙側協調訓練遊戲 進入點
 
 初始化 pygame（全螢幕）、攝影機、MediaPipe HandLandmarker，組出 AppContext，
 push LoginScene 開始跑主迴圈。所有實際畫面邏輯都在 scenes/ 跟 games/ 底下，
@@ -31,7 +31,7 @@ def main():
         pygame.mixer.init()
     except pygame.error:
         pass
-    pygame.display.set_caption("復健訓練遊戲平台")
+    pygame.display.set_caption("雙側協調訓練遊戲")
     screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
     clock = pygame.time.Clock()
 

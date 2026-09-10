@@ -85,3 +85,17 @@ PAIR_PASS_SCORE = 60               # 10 組平均分數要達到這個門檻才�
 LEFT_HAND_COLOR = (90, 200, 230)   # 青色
 RIGHT_HAND_COLOR = (240, 150, 60)  # 橘色
 HAND_MARKER_RADIUS = 22
+
+
+# PDF difficulty groups; every combination remains selectable for testing.
+def training_levels():
+    colors = [(70, 210, 90), (240, 215, 40), (65, 160, 245), (185, 95, 235), (160, 160, 160)]
+    levels = []
+    for action in ACTION_SETS:
+        left, right = action["left"], action["right"]
+        axes = left in ("H", "V") and right in ("H", "V")
+        circles = left in ("CW", "CCW") and right in ("CW", "CCW")
+        difficulty = (1 if left == right else 4) if axes else ((2 if left == right else 3) if circles else 5)
+        levels.append(dict(level_id=action["combo_id"], label=f"Lv.{difficulty} {action['label']}",
+                           difficulty=difficulty, color=colors[difficulty-1], unlocked=True))
+    return sorted(levels, key=lambda item: item["difficulty"])

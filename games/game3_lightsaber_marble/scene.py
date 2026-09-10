@@ -3,11 +3,8 @@ games/game3_lightsaber_marble/scene.py - 遊戲二「光劍」畫面
 
 流程：GUIDE → LEVEL_SELECT → COUNTDOWN → PLAYING → RESULT。
 
-【控制範圍】兩手各自控制一把光劍，任何一把光劍都可以打中畫面上任何一顆
-彈珠，沒有「這一側只有某一手能打」的限制——曾經加過左右分區限制（右手只能
-打左邊、左手只能打右邊），但玩家實測覺得這個限制很奇怪，已經拿掉。這支檔案
-只負責：每幀讀兩手中指/小指的角度、平滑轉動兩把光劍、判斷有沒有打中，其餘
-規則邏輯完全不寫在這裡，方便單獨測試（見 tests/test_game3_motion.py）。
+【控制範圍】右手橘劍只在左半邊、左手藍劍只在右半邊，兩把劍不能跨中線。
+中央球依顏色判定；錯色扣一分。四指需伸直並同步彎動掌指關節才有效。
 
 【2026-09-09 改用角度判定取代像素遮罩碰撞】原本用 pygame.sprite.collide_mask
 判斷光劍圖形有沒有跟彈珠圖形疊到像素，但手部追蹤更新頻率比畫面渲染慢很多，
@@ -23,9 +20,7 @@ games/game3_lightsaber_marble/scene.py - 遊戲二「光劍」畫面
 角度量測用「已鏡像」的座標（x 取 1.0-x，跟畫面顯示的鏡像視角一致），這樣手在
 畫面上看起來往右指，算出來的角度方向也會跟畫面上光劍轉動的方向對得上。
 
-跟舊版 BilateralCoordinationTraining Game2 一樣採「交叉控制」：右手角度控制
-「左邊」那把光劍、左手角度控制「右邊」那把光劍——但兩把光劍都能打中畫面上
-任何一顆彈珠，交叉控制只影響「哪隻手轉哪把劍」，不影響「哪把劍能打哪裡」。
+採交叉控制：右手控制畫面左側橘劍，左手控制畫面右側藍劍。
 
 【2026-09-09 換上 BilateralCoordinationTraining 原版的美術素材】彈珠/光劍
 改用 assets/image/lightsaber/ 底下的圖片（從舊專案複製過來），缺檔時會印警告
@@ -47,6 +42,7 @@ import pygame
 
 from common.camera_hand_tracker import draw_hand_skeleton, estimate_distance_hint
 from common.cv_pygame import bgr_frame_to_surface
+from common.straight_hand import hand_posture
 from common.paths import resource_path
 from common.scene_manager import Scene, Transition
 from common.arcade_recording import ArcadeRecording, record_sabers
@@ -95,6 +91,8 @@ _IMAGE_PATHS = {
     "red_sword": os.path.join("assets", "image", "lightsaber", "red_light_sword.png"),
     "marble": os.path.join("assets", "image", "lightsaber", "blue_marble.png"),
     "marble_broke": os.path.join("assets", "image", "lightsaber", "blue_marble_broke.png"),
+    "orange_marble": os.path.join("assets", "image", "lightsaber", "red_marble.png"),
+    "orange_broke": os.path.join("assets", "image", "lightsaber", "red_marble_broke.png"),
 }
 
 _image_cache = {}
@@ -187,9 +185,10 @@ _MARBLE_FADE_SEC = 0.25  # 打中之後碎裂圖淡出要花幾秒，見 Marble.
 
 
 class Marble(pygame.sprite.Sprite):
-    def __init__(self, pivot, angle_deg, outer_radius, inner_radius, speed, image, image_broke):
+    def __init__(self, pivot, angle_deg, outer_radius, inner_radius, speed, image, image_broke, color="orange"):
         super().__init__()
         self.pivot = pivot
+        self.color = color
         self.angle_deg = angle_deg
         self.outer_radius = outer_radius
         self.inner_radius = inner_radius
@@ -260,8 +259,11 @@ class LightSword(pygame.sprite.Sprite):
         self.rect = self.image.get_rect(center=pivot)
 
     def update_towards(self, target_angle_deg):
-        self.angle_deg = motion.smooth_angle_towards(self.angle_deg, target_angle_deg, cfg.ANGLE_SMOOTH_LERP)
-        self.active = motion.is_within_active_arc(self.angle_deg, cfg.ACTIVE_ARC_MIN_DEG, cfg.ACTIVE_ARC_MAX_DEG)
+        pointing_up = motion.is_within_active_arc(target_angle_deg, cfg.ACTIVE_ARC_MIN_DEG, cfg.ACTIVE_ARC_MAX_DEG)
+        lo, hi = getattr(self, "allowed_arc", (cfg.ACTIVE_ARC_MIN_DEG, cfg.ACTIVE_ARC_MAX_DEG))
+        target_angle_deg = max(lo, min(hi, target_angle_deg))
+        self.angle_deg = max(lo, min(hi, motion.smooth_angle_towards(self.angle_deg, target_angle_deg, cfg.ANGLE_SMOOTH_LERP)))
+        self.active = pointing_up and motion.is_within_active_arc(self.angle_deg, cfg.ACTIVE_ARC_MIN_DEG, cfg.ACTIVE_ARC_MAX_DEG)
         self._rebuild()
 
     def _rebuild(self):
@@ -311,9 +313,9 @@ class Game3Scene(Scene):
         self.guide_panel = InstructionPanel(
             (w // 2 - 360, h // 2 - 230, 720, 420), DISPLAY_NAME,
             [
-                "右手轉動手腕控制左邊的光劍、左手控制右邊的光劍，兩把光劍都能打中畫面上任何一顆彈珠。",
-                "手指指向畫面上方時光劍才會亮起；手放太低、角度太平時光劍會暫時失效。",
-                "彈珠會從外圈往圓心飛，飛到中心前隨便用哪把光劍揮過去攔截都可以。",
+                "右手橘劍打左側橘球，左手藍劍打右側藍球；光劍不能跨過中線。",
+                "四指保持伸直、同步彎動掌指關節；手指彎曲或漏偵測時不能得分。",
+                "中央球須用同色劍擊中，錯色扣 1 分並播放錯誤音。",
             ],
             self._on_guide_dismissed,
         )
@@ -332,15 +334,21 @@ class Game3Scene(Scene):
         red_sword_img = _get_image("red_sword")
         self._marble_image = _get_image("marble")
         self._marble_image_broke = _get_image("marble_broke")
+        self._orange_marble = _get_image("orange_marble")
+        self._orange_broke = _get_image("orange_broke")
         # 圖片原始尺寸很大（2048px），縮放成高度等於 saber_length（劍柄到劍尖
         # 剛好對應 length，跟 _blit_hilt_anchored()/命中判定的幾何假設一致），
         # 只在進場的時候做一次，不會每一幀都重新縮放。
         blue_sword_scaled = _scaled_copy(blue_sword_img, saber_length) if blue_sword_img else None
         red_sword_scaled = _scaled_copy(red_sword_img, saber_length) if red_sword_img else None
 
-        self.left_sword = LightSword(self.pivot, saber_length, (90, 170, 255), blue_sword_scaled)   # 右手控制
-        self.right_sword = LightSword(self.pivot, saber_length, (255, 140, 90), red_sword_scaled)   # 左手控制
+        self.left_sword = LightSword(self.pivot, saber_length, (255, 140, 90), red_sword_scaled)   # 右手控制
+        self.right_sword = LightSword(self.pivot, saber_length, (90, 170, 255), blue_sword_scaled)   # 左手控制
 
+        self.left_sword.allowed_arc = (90.0, cfg.ACTIVE_ARC_MAX_DEG)
+        self.right_sword.allowed_arc = (cfg.ACTIVE_ARC_MIN_DEG, 90.0)
+        self.hand_postures = {}
+        self.last_hand_frame_at = 0.0
         self.last_frame_id = -1
         self.display_frame = None
         self.left_landmarks = None
@@ -350,12 +358,14 @@ class Game3Scene(Scene):
         self.marbles = pygame.sprite.Group()
         self.play_start_time = None
         self.next_spawn_at = None
+        self.max_possible_score = 0
         self.score = 0
         self.hits = 0
         self.misses = 0
         self.session_result = None
         self._pending_transition = None
 
+        self.retry_button = Button((w // 2 - 100, h - PADDING - 56, 200, 56), "再玩一次", on_click=lambda: self._on_level_selected(self.selected_level["level_id"]))
         self.back_button = Button((PADDING, h - PADDING - 56, 200, 56), "返回主選單", on_click=self._go_back)
 
     def _go_back(self):
@@ -384,6 +394,7 @@ class Game3Scene(Scene):
             self.level_select_widget.handle_event(event)
         if self.state == "result":
             self.back_button.handle_event(event)
+            self.retry_button.handle_event(event)
         return None
 
     def update(self, ctx, dt):
@@ -391,6 +402,10 @@ class Game3Scene(Scene):
         if frame is not None:
             self._process_frame(frame, ctx.landmarker)
 
+        if self.state == "playing" and time.time() - self.last_hand_frame_at > 0.3:
+            for sword in (self.left_sword, self.right_sword):
+                sword.active = False
+                sword._rebuild()
         self._advance_state(ctx, dt)
 
         if self._pending_transition is not None:
@@ -428,11 +443,16 @@ class Game3Scene(Scene):
             self.distance_hint = estimate_distance_hint(hint_source)
 
         if self.state == "playing":
-            # 交叉控制：右手轉「左邊」光劍、左手轉「右邊」光劍。
-            if right_landmarks is not None:
-                self.left_sword.update_towards(_hand_pointing_angle(right_landmarks))
-            if left_landmarks is not None:
-                self.right_sword.update_towards(_hand_pointing_angle(left_landmarks))
+            self.last_hand_frame_at = time.time()
+            for side, landmarks, sword in (("right", right_landmarks, self.left_sword),
+                                           ("left", left_landmarks, self.right_sword)):
+                posture = hand_posture(landmarks, w / h)
+                self.hand_postures[side] = posture
+                if posture["valid"]:
+                    sword.update_towards(_hand_pointing_angle(landmarks))
+                else:
+                    sword.active = False
+                    sword._rebuild()
 
     def _advance_state(self, ctx, dt):
         now = time.time()
@@ -449,6 +469,7 @@ class Game3Scene(Scene):
         self.state_start_time = now
         self.play_start_time = now
         self.marbles.empty()
+        self.max_possible_score = 0
         self.score = 0
         self.hits = 0
         self.misses = 0
@@ -464,12 +485,21 @@ class Game3Scene(Scene):
         elapsed_sec = now - self.play_start_time
         level = self.selected_level
 
-        if elapsed_sec >= self.next_spawn_at:
+        if elapsed_sec >= level["play_time_sec"]:
+            self._finish_playing(ctx)
+            return
+        travel = (self.outer_radius-self.inner_radius) / (motion.marble_speed_for(level, elapsed_sec)*60)
+        if elapsed_sec >= self.next_spawn_at and elapsed_sec + travel < level["play_time_sec"]:
             angle = motion.marble_spawn_angle_deg(level, cfg.ACTIVE_ARC_MIN_DEG, cfg.ACTIVE_ARC_MAX_DEG)
             speed = motion.marble_speed_for(level, elapsed_sec)
-            self.marbles.add(Marble(
-                self.pivot, angle, self.outer_radius, self.inner_radius, speed,
-                self._marble_image, self._marble_image_broke))
+            color = (random.choice(("orange", "blue")) if abs(angle - 90) < 1e-6
+                     else "orange" if angle > 90 else "blue")
+            marble = Marble(self.pivot, angle, self.outer_radius, self.inner_radius, speed,
+                self._orange_marble if color == "orange" else self._marble_image,
+                self._orange_broke if color == "orange" else self._marble_image_broke)
+            marble.color = color
+            self.marbles.add(marble)
+            self.max_possible_score += 1
             self._schedule_next_spawn(elapsed_sec)
 
         for marble in list(self.marbles):
@@ -490,34 +520,38 @@ class Game3Scene(Scene):
                     sound.play()
                 continue
 
-            # 任何一把光劍都可以打中這顆彈珠，沒有「這一側只有某一手能打」的
-            # 限制（見檔頭改版說明）。
-            hit = False
-            for sword in (self.left_sword, self.right_sword):
-                if sword.active and motion.is_marble_hit(
+            for sword, color, hand in ((self.left_sword, "orange", "right"),
+                                        (self.right_sword, "blue", "left")):
+                central = abs(marble.angle_deg - 90) < 1e-6
+                allowed_side = central or (marble.angle_deg > 90 if hand == "right" else marble.angle_deg < 90)
+                if not (sword.active and allowed_side and motion.is_marble_hit(
                         marble.angle_deg, marble.distance, sword.angle_deg, sword.length,
-                        cfg.HIT_ANGLE_TOLERANCE_DEG):
-                    hit = True
-                    break
-            if hit:
-                self.arcade_recording.event(now, "光劍命中", marble,
-                    self.arcade_recording.point(*marble.rect.center), self.score, self.score + cfg.HIT_SCORE,
-                    side="right" if sword is self.left_sword else "left", sword_angle=sword.angle_deg)
-                self.score += cfg.HIT_SCORE
-                self.hits += 1
+                        cfg.HIT_ANGLE_TOLERANCE_DEG)):
+                    continue
+                correct = color == marble.color
+                delta = cfg.HIT_SCORE if correct else -1
+                self.arcade_recording.event(now, "同色光劍命中" if correct else "中央球錯色（扣 1 分）", marble,
+                    self.arcade_recording.point(*marble.rect.center), self.score, self.score + delta,
+                    side=hand, sword_angle=sword.angle_deg, color=marble.color)
+                self.score += delta
+                self.hits += int(correct)
                 marble.hit()
-                sound = _get_sound("hit")
+                sound = _get_sound("hit" if correct else "miss")
                 if sound is not None:
                     sound.play()
+                break
 
         record_sabers(self, now)
         if elapsed_sec >= level["play_time_sec"]:
             self._finish_playing(ctx)
 
     def _finish_playing(self, ctx):
+        threshold = max(1, math.ceil(self.max_possible_score * 0.8))
         self.session_result = scoring.compute_session_result(
-            self.score, self.hits, self.misses, self.selected_level)
+            self.score, self.hits, self.misses, {**self.selected_level, "pass_score": threshold})
         details = self.session_result.to_details(self.selected_level["level_id"])
+        details.update(rule_version="saber_colors_v2", max_possible_score=self.max_possible_score,
+                       pass_score=threshold, pass_ratio=0.8)
         details["arcade_replay"] = self.arcade_recording.data
         begin_result_save(self, ctx, GAME_ID, self.score, details)
         self.state_start_time = time.time()
@@ -552,10 +586,10 @@ class Game3Scene(Scene):
         if self.display_frame is None:
             return pygame.Rect(0, 0, 0, 0)
         frame_surface = bgr_frame_to_surface(self.display_frame)
-        video_w = 380  # 放大過的即時畫面（原本 220 太小）
+        video_w = min(220, w // 6)
         video_h = int(video_w * self.display_frame.shape[0] / self.display_frame.shape[1])
         frame_surface = pygame.transform.smoothscale(frame_surface, (video_w, video_h))
-        rect = frame_surface.get_rect(right=w - PADDING, top=PADDING)
+        rect = frame_surface.get_rect(right=w - PADDING, top=70)
         surface.blit(frame_surface, rect)
         return rect
 
@@ -611,4 +645,8 @@ class Game3Scene(Scene):
             True, pass_color)
         surface.blit(info, info.get_rect(centerx=w // 2, top=h // 2 - 10))
 
+        threshold = max(1, math.ceil(self.max_possible_score * 0.8))
+        rule = get_font(22).render(f"本局可得 {self.max_possible_score} 分　過關需 {threshold} 分（80%）", True, COLOR_TEXT)
+        surface.blit(rule, rule.get_rect(centerx=w // 2, top=h // 2 + 50))
         self.back_button.draw(surface)
+        self.retry_button.draw(surface)

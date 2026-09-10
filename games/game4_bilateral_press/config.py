@@ -1,14 +1,8 @@
 """
 games/game4_bilateral_press/config.py - 遊戲三「三角形」可調參數
 
-【手勢，比照 press_pin 原本的判定方式】曾經改成要求「手指維持伸直、手腕整個
-往下壓」（像蓋章/拍打），但玩家實測覺得跟舊版完全不一樣、判斷方式很奇怪，
-改回舊版的語意：手腕不用動、手指本身也不用移動，純粹看食指有沒有彎折就算
-一次按壓，見 motion.py::is_finger_bent()。
-
-三角形從畫面中間往左右兩側飄出，藍色可以吃（命中加分）、紅色不能吃（誤觸
-扣分、斷連擊），跟 press_pin 原本的配色語意一致。左右手分別各自負責自己
-那一側的三角形（雙側協調的核心，兩手要各自獨立判斷、互不影響）。
+四指伸直並同步彎動掌指關節；參數位於 common/straight_hand.py。
+雙側同色：雙藍同步按壓才得分，雙紅都不按。每關 90 秒，80% 過關。
 """
 
 # ---- 手勢判定 ----
@@ -51,11 +45,11 @@ PADDLE_FLASH_SEC = 0.15
 LEVELS = [
     {"level_id": "lv1", "label": "Lv.1", "description": "慢速．少誘餌",
      "spawn_interval_sec": 1.6, "triangle_speed": 4.0, "distractor_ratio": 0.2,
-     "duration_sec": 45.0, "pass_score": 15},
+     "duration_sec": 90.0, "pass_score": 15},
     {"level_id": "lv2", "label": "Lv.2", "description": "中速．誘餌變多",
      "spawn_interval_sec": 1.2, "triangle_speed": 5.5, "distractor_ratio": 0.4,
-     "duration_sec": 45.0, "pass_score": 25},
+     "duration_sec": 90.0, "pass_score": 25},
     {"level_id": "lv3", "label": "Lv.3", "description": "快速．誘餌最多",
      "spawn_interval_sec": 0.9, "triangle_speed": 7.0, "distractor_ratio": 0.5,
-     "duration_sec": 45.0, "pass_score": 35},
+     "duration_sec": 90.0, "pass_score": 35},
 ]

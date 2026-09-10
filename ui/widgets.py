@@ -142,12 +142,18 @@ class InstructionPanel:
         title_surf = title_font.render(self.title, True, COLOR_TEXT)
         surface.blit(title_surf, title_surf.get_rect(centerx=self.rect.centerx, top=self.rect.top + 24))
 
-        line_font = get_font(22)
+        from ui.training_panels import _wrap
         y = self.rect.top + 24 + title_surf.get_height() + 24
-        for line in self.lines:
-            line_surf = line_font.render(f"•  {line}", True, COLOR_TEXT_MUTED)
+        for size in range(22, 11, -1):
+            line_font = get_font(size)
+            wrapped = _wrap(["• " + line for line in self.lines], line_font, self.rect.width - 80)
+            step = line_font.get_linesize() + 6
+            if len(wrapped)*step <= self.button.rect.top-y-12:
+                break
+        for line in wrapped:
+            line_surf = line_font.render(line, True, COLOR_TEXT_MUTED)
             surface.blit(line_surf, (self.rect.left + 40, y))
-            y += line_surf.get_height() + 12
+            y += step
 
         self.button.draw(surface)
 
@@ -202,8 +208,10 @@ class LevelSelect:
             btn.handle_event(event)
 
     def draw(self, surface):
-        for btn in self.buttons:
+        for level, btn in zip(self.levels, self.buttons):
             btn.draw(surface)
+            if "color" in level:
+                pygame.draw.rect(surface, level["color"], btn.rect, 3, border_radius=8)
 
 
 class ScrollList:

@@ -15,6 +15,8 @@ def draw_arcade_replay(replay, surface):
         lines.append(label + ("：偵測到" if frame['hands'][side] else "：未偵測到"))
         if "presses" in frame:
             lines.append(label + ("：按壓" if frame['presses'][side] else "：未按壓"))
+    for side, posture in frame.get("postures", {}).items():
+        lines.append(("左手：" if side == "left" else "右手：") + posture["reason"])
     for sword in frame.get("swords", []):
         label = "左手" if sword["hand"] == "left" else "右手"
         lines.append(f"{label}光劍：{sword['angle']:.1f}° / {'有效' if sword['active'] else '無效'}")
@@ -30,7 +32,7 @@ def draw_arcade_replay(replay, surface):
     clip = surface.get_clip()
     surface.set_clip(replay.canvas_rect)
     for sword in frame.get("swords", []):
-        color = (90, 170, 255) if sword["hand"] == "right" else (255, 140, 90)
+        color = sword.get("color", (90, 170, 255) if sword["hand"] == "right" else (255, 140, 90))
         if not sword["active"]:
             color = (100, 100, 110)
         pygame.draw.line(surface, color, replay._to_canvas_px(sword["start"]), replay._to_canvas_px(sword["end"]), 8)
@@ -42,7 +44,10 @@ def draw_arcade_replay(replay, surface):
             pygame.draw.circle(surface, COLOR_TEXT, (x, y), 23, width=2)
     for obj in frame["objects"]:
         x, y = replay._to_canvas_px(obj["position"])
-        if "color" in obj:
+        if obj.get("shape") == "circle":
+            color = (90, 170, 255) if obj["color"] == "blue" else (255, 140, 90)
+            pygame.draw.circle(surface, (150,150,150) if obj['broken'] else color, (x,y), 10)
+        elif "color" in obj:
             color = (80, 150, 240) if obj['color'] == 'blue' else (220, 90, 90)
             pygame.draw.polygon(surface, color, [(x,y-12), (x-12,y+12), (x+12,y+12)])
         else:

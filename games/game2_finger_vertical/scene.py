@@ -1,12 +1,13 @@
 """遊戲一：以食指尖追蹤 16 種雙手動作組合。
 
 水平／垂直使用獨立的握拳、食指伸展、收回判定；畫圓沿用圓形辨識器，
-追蹤點改為食指尖。所有組合依左右手完成順序配對，滿十組結束並儲存回放。
+追蹤點改為食指尖。所有組合固定 60 秒，同步完成一組 +1 分，8 分過關並儲存回放。
 左右手身分檢查與遊戲零共用，漏偵測時清除未完成動作，保留已完成組數。
 """
 
 import math
 from common import game_time as time
+from common import timed_training
 from collections import deque
 
 import cv2
@@ -14,11 +15,10 @@ import mediapipe as mp
 import pygame
 
 from common.camera_hand_tracker import draw_hand_skeleton, estimate_distance_hint
-from common.cv_pygame import bgr_frame_to_surface
 from common.hand_identity import HandIdentityTracker
 from common.training_tracking import interrupt_hand
 from common.training_diagnostics import start_diagnostics, record_diagnostics, export_diagnostics
-from ui.training_panels import training_layout, draw_training_panels
+from ui.training_panels import training_layout, draw_training_panels, draw_training_view
 from common.scene_manager import Scene, Transition
 from data_store import user_store
 from common.background_persistence import begin_result_save
@@ -31,7 +31,7 @@ from ui.widgets import Button, LevelSelect, InstructionPanel
 
 GAME_ID = "game2_finger_vertical"
 DISPLAY_NAME = "遊戲一．動作組合（手指）"
-DESCRIPTION = "食指尖伸展與畫圓，完成十組動作"
+DESCRIPTION = "食指尖伸展與畫圓，60 秒內同步完成動作"
 
 _WRIST = 0
 _INDEX_TIP = 8
@@ -134,21 +134,19 @@ def _draw_dot_icon(surface, center, radius, color):
 
 
 class Game2Scene(Scene):
+    timed_session = True
     def on_enter(self, ctx, **kwargs):
         if kwargs.get("resumed"):
             return
 
         self._username = ctx.current_user
-        self.level_options = [
-            {"level_id": a["combo_id"], "label": a["label"], "unlocked": True}
-            for a in shared_cfg.ACTION_SETS
-        ]
+        self.level_options = shared_cfg.training_levels()
         self.selected_action = None
 
         w, h = ctx.screen.get_size()
         self.level_select_widget = LevelSelect(
-            (w // 2 - 480, 120, 960, h - 120 - 100), self.level_options, self._on_level_selected,
-            font_size=22, columns=shared_cfg.ACTION_GRID_COLUMNS)
+            (40, 120, w - 80, h - 220), self.level_options, self._on_level_selected,
+            font_size=20, columns=2)
 
         self.guide_panel = InstructionPanel(
             (w // 2 - 440, h // 2 - 230, 880, 460), DISPLAY_NAME,
@@ -157,7 +155,7 @@ class Game2Scene(Scene):
                 "垂直向正上方伸，水平向側邊伸；手掌穩定、其餘手指握拳。",
                 "食指中間和末端指節也要伸展，不能只轉動指根關節。",
                 "畫圓：以食指尖從正上方開始，照指定方向畫一整圈。",
-                "左右手各完成一次算一組；完成十組後結束。",
+                "每局 60 秒，同步完成差在 0.3 秒內 +1 分，8 分過關。",
             ],
             self._on_guide_dismissed,
         )
@@ -166,6 +164,7 @@ class Game2Scene(Scene):
         self.state_start_time = time.time()
 
         self.hand_identity = HandIdentityTracker(tip_id=8)
+        self._missing_since = {}
         self.last_sample_time = time.time()
         self.last_frame_id = -1
         self.display_frame = None
@@ -183,7 +182,12 @@ class Game2Scene(Scene):
         self.session_result = None
         self._pending_transition = None
 
+        self.retry_button = Button((w // 2 - 100, h - PADDING - 56, 200, 56), "再玩一次", on_click=self._retry)
         self.back_button = Button((PADDING, h - PADDING - 56, 200, 56), "返回主選單", on_click=self._go_back)
+
+    def _retry(self):
+        self.state = "countdown"
+        self.state_start_time = time.time()
 
     def _go_back(self):
         self._pending_transition = Transition("pop")
@@ -211,6 +215,7 @@ class Game2Scene(Scene):
             self.level_select_widget.handle_event(event)
         if self.state == "result":
             self.back_button.handle_event(event)
+            self.retry_button.handle_event(event)
         return None
 
     def update(self, ctx, dt):
@@ -244,6 +249,7 @@ class Game2Scene(Scene):
         frame = cv2.flip(frame, 1)
         h, w = frame.shape[:2]
 
+        self.raw_hand_count = len(result.hand_landmarks or [])
         left_landmarks, right_landmarks = self.hand_identity.update(result, time.time())
         for label, landmarks in (("Left", left_landmarks), ("Right", right_landmarks)):
             if landmarks is not None:
@@ -256,13 +262,20 @@ class Game2Scene(Scene):
         hint_source = right_landmarks if right_landmarks is not None else left_landmarks
         self.distance_hint = estimate_distance_hint(hint_source) if hint_source is not None else None
 
-        if self.state != "playing":
+        if self.state != "playing" or (self.timed_session and time.time() - self.state_start_time >= timed_training.DURATION_SECONDS):
             return
 
         for side, landmarks in (("left", left_landmarks), ("right", right_landmarks)):
             if landmarks is None:
-                interrupt_hand(self, side, _make_recognizer)
+                now = time.time()
+                since = self._missing_since.setdefault(side, now)
+                reason = self.hand_identity.status[side.title()]["reason"]
+                # Brief detector gaps keep the unfinished gesture, never invent points.
+                getattr(self, side + "_trail").clear()
+                if reason not in ("no_detection", "stabilizing", "low_confidence") or now-since > 0.35:
+                    interrupt_hand(self, side, _make_recognizer)
             else:
+                self._missing_since.pop(side, None)
                 self.tracking_lost[side] = False
 
         t_s = time.time()
@@ -320,6 +333,8 @@ class Game2Scene(Scene):
             self.left_trail.clear()
             self.right_trail.clear()
 
+        if synced:
+            self.reward_until = t_s + 0.65
         record_diagnostics(self, t_s)
 
     def _advance_state(self, ctx):
@@ -332,7 +347,7 @@ class Game2Scene(Scene):
         elif self.state == "playing":
             completed_pairs = (self.sync_tracker.completed_pairs if self.pair_scoring_mode is not None
                                 else self.sync_tracker.score)
-            if completed_pairs >= cfg.TARGET_COMPLETIONS:
+            if elapsed_in_state >= timed_training.DURATION_SECONDS:
                 self._finish_playing(ctx)
 
     def _start_playing(self, now):
@@ -353,9 +368,17 @@ class Game2Scene(Scene):
         self.left_trail.clear()
         self.right_trail.clear()
 
+        if self.timed_session:
+            self.pair_scoring_mode = None
+            self.sync_tracker = timed_training.CompletionSync()
+            self.trail_recorder = None
+        self._missing_since = {}
+        self.reward_until = 0.0
         start_diagnostics(self, now)
 
     def _finish_playing(self, ctx):
+        if self.timed_session:
+            record_diagnostics(self, min(time.time(), self.state_start_time + timed_training.DURATION_SECONDS), source="result")
         if self.pair_scoring_mode is not None:
             final_score = round(self.sync_tracker.average_score)
             self.session_result = scoring.compute_session_result(final_score, shared_cfg.PAIR_PASS_SCORE)
@@ -365,6 +388,12 @@ class Game2Scene(Scene):
             self.session_result = scoring.compute_session_result(
                 self.sync_tracker.score, cfg.TARGET_COMPLETIONS)
             details = self.session_result.to_details(self.selected_action["combo_id"])
+        if self.timed_session:
+            self.session_result = scoring.compute_session_result(self.sync_tracker.score, timed_training.PASS_SCORE)
+            details = self.session_result.to_details(self.selected_action["combo_id"])
+            details.update(rule_version=timed_training.RULE_VERSION, duration_sec=timed_training.DURATION_SECONDS,
+                           pass_score=timed_training.PASS_SCORE, sync_seconds=timed_training.SYNC_SECONDS,
+                           action_label=self.selected_action["label"])
         details["analysis"] = export_diagnostics(self, ctx)
         begin_result_save(self, ctx, GAME_ID, self.session_result.score, details)
         self.state_start_time = time.time()
@@ -402,17 +431,7 @@ class Game2Scene(Scene):
         self.level_select_widget.draw(surface)
 
     def _draw_camera_feed(self, surface, w, h):
-        _, area, _ = training_layout((w, h))
-        if self.display_frame is None:
-            return area
-        frame_surface = bgr_frame_to_surface(self.display_frame)
-        image_h, image_w = self.display_frame.shape[:2]
-        scale = min(area.width / image_w, area.height / image_h)
-        size = (max(1, int(image_w * scale)), max(1, int(image_h * scale)))
-        frame_surface = pygame.transform.smoothscale(frame_surface, size)
-        rect = frame_surface.get_rect(center=area.center)
-        surface.blit(frame_surface, rect)
-        return rect
+        return draw_training_view(surface, self.display_frame)
 
     def _draw_countdown(self, surface, w, h):
         remaining = _COUNTDOWN_SECONDS - (time.time() - self.state_start_time)
@@ -427,6 +446,20 @@ class Game2Scene(Scene):
 
     def _draw_playing_hud(self, surface, w, video_rect):
         draw_training_panels(surface, self.debug_snapshot)
+        if self.timed_session:
+            remaining = max(0, timed_training.DURATION_SECONDS - (time.time()-self.state_start_time))
+            _, area, _ = training_layout(surface.get_size())
+            text = f"剩餘 {remaining:.0f} 秒　{self.sync_tracker.score} 分／8 分過關"
+            width = area.width - min(110, area.height // 4) * 4 // 3 - 18
+            font_size = 22
+            while font_size > 10 and get_font(font_size).size(text)[0] > width:
+                font_size -= 1
+            label = get_font(font_size).render(text, True, COLOR_TEXT)
+            surface.blit(label, (area.left, area.top + 4))
+            if time.time() < self.reward_until:
+                label = get_font(26).render("同步完成 +1", True, COLOR_SUCCESS)
+                surface.blit(label, (area.left, area.top + 40))
+
 
     def _draw_hand_trails(self, surface, video_rect):
         """畫出兩手「目前這一組」的移動軌跡線，見
@@ -489,6 +522,8 @@ class Game2Scene(Scene):
         score_font = get_font(72)
         score_label = (f"平均 {self.session_result.score} 分" if self.pair_scoring_mode is not None
                        else f"{self.session_result.score} 次同步")
+        if self.timed_session:
+            score_label = f"{self.session_result.score} 分"
         score_text = score_font.render(score_label, True, COLOR_SUCCESS)
         surface.blit(score_text, score_text.get_rect(centerx=w // 2, top=h // 2 - 80))
 
@@ -501,3 +536,4 @@ class Game2Scene(Scene):
         surface.blit(info, info.get_rect(centerx=w // 2, top=h // 2 + 10))
 
         self.back_button.draw(surface)
+        self.retry_button.draw(surface)

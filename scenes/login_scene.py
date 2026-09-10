@@ -121,7 +121,7 @@ class LoginScene(Scene):
         w, h = surface.get_size()
 
         title_font = get_font(48)
-        title = title_font.render("復健訓練遊戲平台", True, COLOR_TEXT)
+        title = title_font.render("雙側協調訓練遊戲", True, COLOR_TEXT)
         surface.blit(title, title.get_rect(centerx=w // 2, top=h // 4))
 
         self.text_input.draw(surface)

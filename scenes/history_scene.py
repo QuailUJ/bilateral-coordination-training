@@ -73,10 +73,10 @@ class HistoryScene(Scene):
         filter_ids = [ALL_GAMES_FILTER] + [g.game_id for g in GAMES]
         filter_labels = ["全部"] + [g.display_name for g in GAMES]
         self.filter_buttons = self._build_button_row(
-            60, 100, filter_ids, filter_labels, self._on_filter_selected, font_size=20)
+            60, 100, filter_ids, filter_labels, self._on_filter_selected, font_size=18, btn_width=(w - 140) // len(filter_ids))
 
         self.mode_buttons = self._build_button_row(
-            60, 156, ["best_scores", "all_scores"], ["歷史新高", "全部成績"],
+            60, 156, ["best_scores", "all_scores"], ["最高／最近", "全部成績"],
             self._on_mode_selected, font_size=22, btn_width=180)
 
         self.list_view = ScrollList((PADDING, self.CONTENT_TOP, w - PADDING * 2, 1),
@@ -166,24 +166,33 @@ class HistoryScene(Scene):
                                     h - content_top - 56 - PADDING * 2)
 
     def _best_per_game_rows(self, history):
-        best_by_game = {}
-        for r in history:
-            gid = r.get("game_id")
-            if gid not in best_by_game or r["score"] > best_by_game[gid]["score"]:
-                best_by_game[gid] = r
+        by_game = {}
+        for record in history:
+            by_game.setdefault(record.get("game_id"), []).append(record)
         rows, payload = [], []
-        for gid, r in sorted(best_by_game.items(), key=lambda kv: _display_name(kv[0])):
-            rows.append((self._row_line1(r, f"{_display_name(gid)}　歷史新高：{r['score']}"),
-                         r.get("timestamp", "")))
-            payload.append(r)
+        for gid, records in sorted(by_game.items(), key=lambda item: _display_name(item[0])):
+            game_rows, game_payload = self._best_single_game_rows(records)
+            rows.extend((f"{_display_name(gid)}　{first}", second) for first, second in game_rows)
+            payload.extend(game_payload)
         return rows, payload
 
     def _best_single_game_rows(self, records):
-        if not records:
-            return [], []
-        best = max(records, key=lambda r: r["score"])
-        rows = [(self._row_line1(best, f"歷史新高：{best['score']}"), best.get("timestamp", ""))]
-        return rows, [best]
+        groups = {}
+        for record in records:
+            details = record.get("details") or {}
+            key = (details.get("level_id", "未分類"), details.get("rule_version", "舊版"))
+            groups.setdefault(key, []).append(record)
+        rows, payload = [], []
+        for (level, version), group in sorted(groups.items()):
+            best = max(group, key=lambda r: r["score"])
+            latest = max(group, key=lambda r: r.get("timestamp", ""))
+            label = (latest.get("details") or {}).get("action_label", level)
+            def result(record):
+                return f"{record['score']}（{'過關' if (record.get('details') or {}).get('passed') else '未過關'}）"
+            rows.append((self._row_line1(best, f"{label}　最高 {result(best)}"),
+                         f"最近 {result(latest)}　規則：{version}"))
+            payload.append(best)
+        return rows, payload
 
     def _all_records_rows(self, records):
         rows, payload = [], []

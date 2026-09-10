@@ -33,6 +33,11 @@ def start_diagnostics(scene, now):
                                     "overlap": 0.10, "camera_gap_s": 0.35}},
         "frames": [],
     }
+    if getattr(scene, "timed_session", False):
+        from common import timed_training
+        scene.diagnostics.update(target_pairs=timed_training.PASS_SCORE,
+            rule_version=timed_training.RULE_VERSION, duration_sec=timed_training.DURATION_SECONDS,
+            sync_seconds=timed_training.SYNC_SECONDS)
     scene.debug_snapshot = None
     if getattr(scene.hand_identity, "tracking_point_kind", "") == "palm_center":
         from common.fist_tracking import PALM_IDS, REACQUIRE_S, LOSS_GRACE_S
@@ -51,7 +56,7 @@ def snapshot(scene, now, source="camera"):
     tracker = scene.sync_tracker
     paired = getattr(tracker, "completed_pairs", getattr(tracker, "score", 0))
     data = {"t": max(0, now - scene.diagnostics["time_origin"]), "source": source,
-            "camera_index": getattr(scene, "_camera_index", None),
+            "camera_index": getattr(scene, "_camera_index", None), "raw_hand_count": getattr(scene, "raw_hand_count", None),
             "paired": paired, "average_score": getattr(tracker, "average_score", None),
             "pair_detail": copy.deepcopy(getattr(tracker, "last_pair_detail", None)),
             "window_remaining": None, "distance_hint": scene.distance_hint}
@@ -119,6 +124,11 @@ def snapshot(scene, now, source="camera"):
                 item["offset_x"] = item["tip"][0] - recognizer.reference[0] if recognizer.reference else None
                 item["offset_y"] = item["tip"][1] - recognizer.reference[1] if recognizer.reference else None
         data[side] = item
+    if getattr(scene, "timed_session", False):
+        from common import timed_training
+        data.update(score_kind="synchronous_points", average_score=tracker.score,
+                    remaining_seconds=max(0, timed_training.DURATION_SECONDS-data["t"]),
+                    sync_seconds=timed_training.SYNC_SECONDS)
     return _clean(data)
 
 
@@ -135,6 +145,9 @@ def record_diagnostics(scene, now, source="camera"):
 
 def export_diagnostics(scene, ctx):
     data = {key: value for key, value in scene.diagnostics.items() if key != "time_origin"}
+    if getattr(scene, "timed_session", False):
+        data["score_events"] = [{**event, "t": event["t"]-scene.diagnostics["time_origin"]}
+                                for event in scene.sync_tracker.events]
     data["camera_index"] = ctx.camera_index
     data["frame_size"] = list(scene.display_frame.shape[1::-1]) if scene.display_frame is not None else None
     return data

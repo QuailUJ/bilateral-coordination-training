@@ -1,6 +1,7 @@
 """One renderer for side diagnostics in live training and recorded playback."""
 import pygame
 
+from common.cv_pygame import bgr_frame_to_surface
 from ui.theme import COLOR_PANEL, COLOR_TEXT, COLOR_TEXT_MUTED, get_font
 
 REASONS = {
@@ -19,6 +20,23 @@ def training_layout(size):
     right = pygame.Rect(w - side + 8, 70, side - 24, h - 155)
     center = pygame.Rect(side + 8, 70, w - 2 * side - 16, h - 190)
     return left, center, right
+
+
+def draw_training_view(surface, frame):
+    """Keep the camera preview separate from the aspect-correct trajectory area."""
+    _, area, _ = training_layout(surface.get_size())
+    preview_height = max(1, min(110, area.height // 4))
+    trajectory = pygame.Rect(area.left, area.top + preview_height + 12,
+                             area.width, max(1, area.height - preview_height - 12))
+    image_h, image_w = frame.shape[:2] if frame is not None else (480, 640)
+    trajectory = pygame.Rect(0, 0, image_w, image_h).fit(trajectory)
+    pygame.draw.rect(surface, COLOR_PANEL, trajectory)
+    if frame is not None:
+        preview = pygame.Rect(0, 0, image_w, image_h).fit(
+            pygame.Rect(area.left, area.top, area.width, preview_height))
+        preview.right = area.right
+        surface.blit(pygame.transform.smoothscale(bgr_frame_to_surface(frame), preview.size), preview)
+    return trajectory
 
 
 def _number(value, digits=2):
@@ -45,6 +63,12 @@ def diagnostic_lines(frame, side):
     if frame.get("score_kind") == "circle_quality":
         lines[1] = f"已完成：{frame['paired']} / {frame.get('target_pairs', 5)} 圈"
         lines[4] = f"平均圓度：{_number(frame['average_score'], 1)} 分"
+    if frame.get("score_kind") == "synchronous_points":
+        lines[1] = f"同步成功：{frame['paired']} 組（每組 +1 分）"
+        lines[4] = f"目前分數：{frame['average_score']}／8 分過關"
+        lines.append(f"剩餘：{frame['remaining_seconds']:.1f} 秒；同步容許差 0.3 秒")
+    if frame.get("raw_hand_count") is not None:
+        lines.append(f"模型找到：{frame['raw_hand_count']} 隻手")
     if tracking.get("confidence") is not None:
         lines.append(f"左右手分類信心：{tracking['confidence']:.2f}")
     lines.extend([f"追蹤中斷：{item['interruptions']} 次", f"判定狀態：{item['state']}"])

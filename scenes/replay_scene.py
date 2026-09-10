@@ -37,6 +37,7 @@ class ReplayScene(Scene):
         self.speed = 1.0
         self.dragging = False
         self.event_times = [0.0]
+        self.event_times.extend(event["t"] for event in self.analysis.get("score_events", []))
         previous = None
         for frame in ([] if self.arcade else self.frames):
             state = tuple((frame[side]["completed"], frame[side]["state"], frame[side]["tracking"]["reason"])
@@ -44,6 +45,7 @@ class ReplayScene(Scene):
             if previous is not None and state != previous:
                 self.event_times.append(frame["t"])
             previous = state
+        self.event_times = sorted(set(self.event_times))
         if self.arcade:
             self.event_times = sorted(set([0.0] + [event["t"] for event in self.analysis["events"]]))
         reps = (record.get("details") or {}).get("reps") or []

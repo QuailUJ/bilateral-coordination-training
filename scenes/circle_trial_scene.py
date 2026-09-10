@@ -15,6 +15,7 @@ from ui.theme import get_font, COLOR_BG, COLOR_TEXT, COLOR_SUCCESS
 
 
 class CircleTrialScene(Game1Scene):
+    timed_session = False
     target_completions = 5
     score_kind = "circle_quality"
 

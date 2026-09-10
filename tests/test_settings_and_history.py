@@ -135,7 +135,7 @@ def test_volume_applies_to_cached_and_new_sounds(ctx):
     assert first.get_volume() == second.get_volume() == 0
 
 
-def test_finger_scene_index_motion_finishes_at_ten_pairs(ctx, monkeypatch):
+def test_finger_scene_counts_ten_but_waits_for_sixty_seconds(ctx, monkeypatch):
     import copy
     import numpy as np
     from test_game2_finger_motion import landmarks
@@ -176,10 +176,14 @@ def test_finger_scene_index_motion_finishes_at_ten_pairs(ctx, monkeypatch):
             process(step / 10)
         process(0, 10)
         assert scene.sync_tracker.completed_pairs == rep + 1
-        assert scene.state == ("result" if rep == 9 else "playing")
+        assert scene.state == "playing"
+    timer.now = 60.0
+    scene._advance_state(ctx)
+    assert scene.state == "result"
     history = user_store.create_or_load_user("test")["history"]
     assert len(history) == 1
-    assert len(history[0]["details"]["reps"]) == 20
+    assert history[0]["score"] == 10
+    assert history[0]["details"]["pass_score"] == 8
     analysis = history[0]["details"]["analysis"]
     assert analysis["version"] == 1
     assert analysis["tip_landmark"] == 8
@@ -188,7 +192,7 @@ def test_finger_scene_index_motion_finishes_at_ten_pairs(ctx, monkeypatch):
     assert frames[-1]["left"]["completed"] == 10
     assert all(a["t"] <= b["t"] for a, b in zip(frames, frames[1:]))
     assert any("pip_angle" in frame["left"]["metrics"] for frame in frames)
-    assert frames[-1]["pair_detail"] is not None
+    assert frames[-1]["score_kind"] == "synchronous_points"
     from scenes.replay_scene import ReplayScene
     replay = ReplayScene()
     replay.on_enter(ctx, history[0])
@@ -198,23 +202,28 @@ def test_finger_scene_index_motion_finishes_at_ten_pairs(ctx, monkeypatch):
     assert replay.duration > 2.5
 
 
-def test_all_finger_combinations_finish_after_ten_even_with_low_similarity(ctx):
+@pytest.mark.parametrize("game", [0, 1])
+def test_all_combinations_wait_for_deadline(ctx, monkeypatch, game):
     from games.game1_bilateral_vertical.config import ACTION_SETS
+    from games.game1_bilateral_vertical.scene import Game1Scene
     from games.game2_finger_vertical.scene import Game2Scene
+    timer = SimpleNamespace(now=0)
+    monkeypatch.setattr(game_time, "time", lambda: timer.now)
     for action in ACTION_SETS:
-        scene = Game2Scene()
+        scene = (Game1Scene if game == 0 else Game2Scene)()
         scene.on_enter(ctx)
         scene.selected_action = action
         scene._start_playing(0)
-        for rep in range(9):
-            scene.sync_tracker.on_left_rep(rep, 0.5, 0)
-            scene.sync_tracker.on_right_rep(rep + 10, 5, 0)
+        for rep in range(1, 13):
+            scene.sync_tracker.update(rep, rep, rep)
+        timer.now = 59.99
         scene._advance_state(ctx)
         assert scene.state == "playing"
-        scene.sync_tracker.on_left_rep(9, 0.5, 0)
-        scene.sync_tracker.on_right_rep(19, 5, 0)
+        timer.now = 60
         scene._advance_state(ctx)
         assert scene.state == "result"
+        assert scene.session_result.score == 12
+        assert scene.session_result.passed
 
 
 def test_game_zero_mislabeled_right_discards_only_unfinished_left(ctx, monkeypatch):
@@ -222,6 +231,7 @@ def test_game_zero_mislabeled_right_discards_only_unfinished_left(ctx, monkeypat
     from test_hand_identity import acquire, result
     from games.game1_bilateral_vertical.scene import Game1Scene
     scene = Game1Scene()
+    scene.timed_session = False  # Legacy recognizer/trial regression.
     scene.on_enter(ctx)
     scene.selected_action = {"combo_id": "VV", "left": "V", "right": "V", "label": "雙手垂直"}
     scene._start_playing(0)
@@ -380,7 +390,7 @@ def test_live_camera_stays_between_side_panels(ctx):
     assert not right.colliderect(video)
 
 
-def test_fist_has_independent_hand_choices_and_finger_keeps_existing_menu(ctx):
+def test_formal_games_share_sixteen_color_coded_options(ctx):
     from games.game1_bilateral_vertical.scene import Game1Scene
     from games.game2_finger_vertical.scene import Game2Scene
     scenes = [Game1Scene(), Game2Scene()]
@@ -391,24 +401,13 @@ def test_fist_has_independent_hand_choices_and_finger_keeps_existing_menu(ctx):
     assert scenes[0].level_options == scenes[1].level_options
     assert len(scenes[1].level_options) == 16
     assert scenes[1].level_select_widget.columns == 2
-    selector = scenes[0].level_select_widget
-    assert len(selector.buttons) == 10
-    for left in ("N", "V", "H", "CW", "CCW"):
-        for right in ("N", "V", "H", "CW", "CCW"):
-            selector.choose("left", left)
-            selector.choose("right", right)
-            assert selector.start.enabled == (left != "N" or right != "N")
-            if selector.start.enabled:
-                selector.start.on_click()
-                assert scenes[0].selected_action["left"] == left
-                assert scenes[0].selected_action["right"] == right
-    selector.choose("left", "N")
-    selector.choose("right", "V")
-    scenes[0].state = "level_select"
-    scenes[0].draw(ctx, ctx.screen)
-    for option in scenes[1].level_options:
-        scenes[1]._on_level_selected(option["level_id"])
-        assert scenes[1].selected_action["combo_id"] == option["level_id"]
+    assert len(scenes[0].level_select_widget.buttons) == 16
+    assert [sum(o["difficulty"] == i for o in scenes[0].level_options) for i in range(1,6)] == [2,2,2,2,8]
+    for scene in scenes:
+        scene.draw(ctx, ctx.screen)
+        for option in scene.level_options:
+            scene._on_level_selected(option["level_id"])
+            assert scene.selected_action["combo_id"] == option["level_id"]
 
 
 @pytest.mark.parametrize("side", ["left", "right"])
@@ -419,6 +418,7 @@ def test_single_hand_only_in_camera_finishes_ten_and_replays(ctx, monkeypatch, s
     from games.game1_bilateral_vertical.scene import Game1Scene, GAME_ID
     from scenes.replay_scene import ReplayScene
     scene = Game1Scene()
+    scene.timed_session = False  # Legacy recognizer/trial regression.
     scene.on_enter(ctx)
     other = "right" if side == "left" else "left"
     scene._on_actions_selected({side: action, other: "N"})
@@ -459,6 +459,7 @@ def test_single_circle_only_in_camera_finishes_ten(ctx, monkeypatch, side, actio
     from test_hand_identity import hand, result
     from games.game1_bilateral_vertical.scene import Game1Scene
     scene = Game1Scene()
+    scene.timed_session = False  # Legacy recognizer/trial regression.
     scene.on_enter(ctx)
     other = "right" if side == "left" else "left"
     scene._on_actions_selected({side: action, other: "N"})
@@ -553,7 +554,7 @@ def test_trial_loss_recreates_trial_algorithm_preserving_completed_count(ctx):
 
 
 @pytest.mark.parametrize("left_action,right_action", [("CW","CW"),("CW","CCW"),("CCW","CW"),("CCW","CCW")])
-def test_formal_bilateral_circles_ten_pairs_save_each_hand(ctx,monkeypatch,left_action,right_action):
+def test_formal_bilateral_circles_timed_session_saves_each_hand(ctx,monkeypatch,left_action,right_action):
     import math
     import numpy as np
     from test_hand_identity import hand,result
@@ -572,12 +573,15 @@ def test_formal_bilateral_circles_ten_pairs_save_each_hand(ctx,monkeypatch,left_
         scene._process_frame(frame.copy(),SimpleNamespace(detect=lambda image:result(*detections)))
         scene._advance_state(ctx)
         if scene.state=="result":break
+    assert scene.state=="playing"
+    monkeypatch.setattr(game_time,"time",lambda:60.0)
+    scene._advance_state(ctx)
     assert scene.state=="result"
-    assert scene.sync_tracker.completed_pairs==10
+    assert scene.sync_tracker.completed_pairs>=10
     record=user_store.get_history_for_game(ctx.current_user,GAME_ID,limit=1)[0]
     details=record["details"]
     assert details["analysis"]["reference_kind"]=="observed_top_reversal"
-    assert len(details["reps"])==20
+    assert details["rule_version"] == "timed_bilateral_v2"
     for side in ("left","right"):
         laps=details["circle_records"][side]
         assert len(laps)>=10
@@ -686,7 +690,7 @@ def test_triangle_replay_lists_all_score_and_combo_outcomes(ctx, monkeypatch):
     width = ctx.screen.get_width()
     for i, (color, pressed) in enumerate((("blue", True), ("red", True), ("blue", False), ("red", False))):
         tri = module.Triangle("left", color, 0)
-        tri.distance_px = width * (module.cfg.PADDLE_OFFSET_RATIO + module.cfg.HIT_WINDOW_RATIO + 0.01)
+        tri.distance_px = width * (module.cfg.PADDLE_OFFSET_RATIO if pressed else module.cfg.PADDLE_OFFSET_RATIO + module.cfg.HIT_WINDOW_RATIO + 0.01)
         scene.triangles = [tri]
         scene._resolve_triangles("left", pressed, width, now=i+1)
         record_triangles(scene, i+1)
@@ -777,3 +781,128 @@ def test_login_background_load_does_not_rewrite_existing_user(ctx,monkeypatch):
         assert (path.stat().st_mtime_ns,path.read_bytes())==before
     finally:
         release.set();service.close()
+
+
+@pytest.mark.parametrize("hand,angle,color,expected", [
+    ("right", 120, "orange", 1), ("left", 60, "blue", 1),
+    ("right", 60, "blue", 0), ("left", 120, "orange", 0),
+    ("right", 90, "blue", -1), ("left", 90, "orange", -1),
+])
+def test_saber_side_and_central_color_rules(ctx, monkeypatch, hand, angle, color, expected):
+    from games.game3_lightsaber_marble import scene as module
+    monkeypatch.setattr(module, "_get_sound", lambda key: None)
+    scene = module.Game3Scene()
+    scene.on_enter(ctx)
+    scene.selected_level = dict(scene.level_options[0])
+    scene._start_playing(0)
+    scene.next_spawn_at = 999
+    sword = scene.left_sword if hand == "right" else scene.right_sword
+    sword.active = True
+    sword.angle_deg = angle
+    marble = module.Marble(scene.pivot, angle, scene.inner_radius*1.2,
+                           scene.inner_radius, 0, None, None, color=color)
+    scene.marbles.add(marble)
+    scene._update_playing(ctx, 0, 1)
+    assert scene.score == expected
+    assert sum(e["delta"] for e in scene.arcade_recording.data["events"]) == expected
+
+
+def test_saber_cannot_rotate_across_center(ctx):
+    from games.game3_lightsaber_marble.scene import Game3Scene
+    scene = Game3Scene()
+    scene.on_enter(ctx)
+    for _ in range(20):
+        scene.left_sword.update_towards(0)
+        scene.right_sword.update_towards(180)
+    assert scene.left_sword.angle_deg >= 90
+    assert scene.right_sword.angle_deg <= 90
+
+
+@pytest.mark.parametrize("delay,expected", [(0.0,2),(.3,2),(.301,0),(None,0)])
+def test_triangle_pairs_require_two_presses(ctx, monkeypatch, delay, expected):
+    from games.game4_bilateral_press import scene as module
+    monkeypatch.setattr(module,"_get_sound",lambda key:None)
+    scene=module.Game4Scene(); scene.on_enter(ctx)
+    scene.selected_level=dict(scene.level_options[0]); scene._start_playing(0)
+    w=ctx.screen.get_width()
+    for side in ("left","right"):
+        tri=module.Triangle(side,"blue",0);tri.pair_id=1;tri.pressed_at=None
+        tri.distance_px=w*module.cfg.PADDLE_OFFSET_RATIO
+        scene.triangles.append(tri)
+    scene._resolve_triangles("left",True,w,1)
+    assert scene.combo_state.score==0
+    if delay is not None:
+        scene._resolve_triangles("right",True,w,1+delay)
+    scene._resolve_triangles("left",False,w,2)
+    assert scene.combo_state.score==expected
+    assert all(tri.resolved for tri in scene.triangles)
+    assert sum(e["delta"] for e in scene.arcade_recording.data["events"])==expected
+    scene._resolve_triangles("right",True,w,2)
+    assert scene.combo_state.score==expected
+
+
+@pytest.mark.parametrize("color,expected",[("blue",2),("red",0)])
+def test_triangle_spawn_colors_match_and_denominator_counts_blue(ctx, monkeypatch,color,expected):
+    from games.game4_bilateral_press import scene as module
+    scene=module.Game4Scene();scene.on_enter(ctx)
+    scene.selected_level=dict(scene.level_options[0]);scene._start_playing(0)
+    scene.left_press_confirmed=scene.right_press_confirmed=False
+    monkeypatch.setattr(scene,"_random_color",lambda:color)
+    scene._update_playing(ctx,0,2)
+    assert len(scene.triangles)==2
+    assert {tri.color for tri in scene.triangles}=={color}
+    assert len({tri.pair_id for tri in scene.triangles})==1
+    assert scene.max_possible_score==expected
+
+
+@pytest.mark.parametrize("game",[0,1])
+@pytest.mark.parametrize("score,passed",[(7,False),(8,True)])
+def test_timed_training_pass_threshold(ctx,monkeypatch,game,score,passed):
+    from games.game1_bilateral_vertical.scene import Game1Scene
+    from games.game2_finger_vertical.scene import Game2Scene
+    scene=(Game1Scene if game==0 else Game2Scene)();scene.on_enter(ctx)
+    scene._on_level_selected("VV");scene._start_playing(0)
+    scene.sync_tracker.score=score
+    monkeypatch.setattr(game_time,"time",lambda:60.0)
+    scene._advance_state(ctx)
+    assert scene.session_result.passed==passed
+    scene.retry_button.on_click()
+    assert scene.state=="countdown"
+    scene._start_playing(63)
+    assert scene.sync_tracker.score==0
+
+
+@pytest.mark.parametrize("game",[2,3])
+def test_arcade_pass_ratio_uses_actual_available_targets(ctx,game):
+    from games.game3_lightsaber_marble.scene import Game3Scene
+    from games.game4_bilateral_press.scene import Game4Scene
+    from games.game4_bilateral_press.scoring import ComboState
+    scene=(Game3Scene if game==2 else Game4Scene)();scene.on_enter(ctx)
+    scene.selected_level=dict(scene.level_options[0]);scene._start_playing(0)
+    scene.max_possible_score=11
+    if game==2: scene.score=8
+    else: scene.combo_state=ComboState(score=8)
+    scene._finish_playing(ctx)
+    assert not scene.session_result.passed
+    if game==2: scene.score=9
+    else: scene.combo_state=ComboState(score=9)
+    scene._finish_playing(ctx)
+    assert scene.session_result.passed
+
+
+def test_history_best_and_latest_separate_levels_and_rule_versions():
+    scene=HistoryScene()
+    records=[{"score":score,"timestamp":str(i),"details":{"level_id":level,"rule_version":version,"passed":True}}
+             for i,(level,version,score) in enumerate([("lv1","old",90),("lv1","new",8),("lv1","new",7),("lv2","new",5)])]
+    rows,payload=scene._best_single_game_rows(records)
+    assert len(rows)==3
+    row=next(row for row,rec in zip(rows,payload) if rec["score"]==8)
+    assert "最高 8" in row[0] and "最近 7" in row[1]
+
+
+def test_saber_pointing_down_is_not_activated_by_boundary_clamp(ctx):
+    from games.game3_lightsaber_marble.scene import Game3Scene
+    scene=Game3Scene();scene.on_enter(ctx)
+    scene.left_sword.update_towards(-90)
+    scene.right_sword.update_towards(-90)
+    assert not scene.left_sword.active and not scene.right_sword.active
