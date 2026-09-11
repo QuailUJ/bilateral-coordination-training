@@ -5,7 +5,8 @@ games/game4_bilateral_press/scene.py - 遊戲三「三角形」畫面
 RESULT。三角形從畫面中間往左右兩側飄出，藍色可以吃（命中加分）、紅色不能吃
 （誤觸扣分、斷連擊），跟 press_pin 原本 motor_plan.py 的配色語意一致。
 
-【手勢】四指保持伸直，掌指關節同步彎曲才算按壓；任一指節彎曲則無效。
+【手勢】沿用舊版 motion.py 的 is_finger_bent()，擴展為食指、中指、無名指、
+小指在同一影格都符合彎曲判定才按壓。動畫、音效與左右獨立計分維持舊版。
 
 【左右手 vs 左右側】玩家實測比對過：畫面上看到哪一側的手，就控制哪一側的
 三角形——MediaPipe 判定「Left」控制畫面左側、「Right」控制畫面右側，直接
@@ -25,25 +26,23 @@ import pygame
 
 from common.camera_hand_tracker import draw_hand_skeleton, estimate_distance_hint
 from common.cv_pygame import bgr_frame_to_surface
-from common.straight_hand import hand_posture, HAND_SYNC_SECONDS
 from common.paths import resource_path
 from common.scene_manager import Scene, Transition
 from common.arcade_recording import ArcadeRecording, record_triangles
 from data_store import user_store
 from common.background_persistence import begin_result_save
 from games.game4_bilateral_press import config as cfg
-from games.game4_bilateral_press import scoring
+from games.game4_bilateral_press import motion, scoring
 from ui.theme import get_font, COLOR_BG, COLOR_TEXT, COLOR_ACCENT, COLOR_SUCCESS, COLOR_WARN, PADDING
 from ui.widgets import Button, LevelSelect, InstructionPanel
 
 GAME_ID = "game4_bilateral_press"
 DISPLAY_NAME = "遊戲三．三角形"
-DESCRIPTION = "四指伸直，同步彎動掌指關節接住藍色三角形，紅色不要碰"
+DESCRIPTION = "四根手指一起往下彎接住藍色三角形，紅色不要碰"
 
 # 接住藍色三角形的音效，沿用 press_pin 原本 motor_plan.py 的素材（只有接住
 # 才播，跟舊版一樣沒有另外做誤觸/漏接音效）。缺檔時印警告並靜音繼續跑。
-_SOUND_PATHS = {"hit": os.path.join("assets", "sound", "correct.wav"),
-                "error": os.path.join("assets", "sound", "error.mp3")}
+_SOUND_PATHS = {"hit": os.path.join("assets", "sound", "correct.wav")}
 
 
 def _load_sound(key):
@@ -61,24 +60,9 @@ _sound_cache = {}
 def _get_sound(key):
     # 延遲載入：main.py 要先呼叫 pygame.mixer.init() 之後才能建立 Sound 物件，
     # 而這支檔案在那之前就會被 import。
-    if not pygame.mixer.get_init():
-        try:
-            pygame.mixer.init()
-        except pygame.error as error:
-            print(f"[game4_bilateral_press] 音效裝置無法啟動: {error}")
-            return None
-    if _sound_cache.get(key) is None:
+    if key not in _sound_cache:
         _sound_cache[key] = _load_sound(key)
     return _sound_cache[key]
-
-
-def _play_sound(key):
-    sound = _get_sound(key)
-    if sound is not None and sound.play() is None:
-        # Sound.play silently returns None when all mixer channels are busy.
-        channel = pygame.mixer.find_channel(force=True)
-        if channel is not None:
-            channel.play(sound)
 
 
 _DISTANCE_HINT_TEXT = {
@@ -95,12 +79,16 @@ _RED = (220, 90, 90)
 _COLOR_RGB = {"blue": _BLUE, "red": _RED}
 
 
-def _is_hand_pressed(landmarks, aspect=1.0) -> bool:
-    return _press_posture(landmarks, aspect)["pressed"]
-
-
-def _press_posture(landmarks, aspect=1.0):
-    return hand_posture(landmarks, aspect)
+def _is_hand_pressed(landmarks) -> bool:
+    if landmarks is None or len(landmarks) != 21:
+        return False
+    for base in (5, 9, 13, 17):  # 食指、中指、無名指、小指；沿用舊版各指判定。
+        points = [(landmarks[i].x, landmarks[i].y) for i in (base, base+1, base+3)]
+        if not all(math.isfinite(v) for point in points for v in point):
+            return False
+        if not motion.is_finger_bent(*points, cfg.FINGER_BENT_MAX_DEG):
+            return False
+    return True
 
 
 class Triangle:
@@ -131,8 +119,8 @@ class Game4Scene(Scene):
         self.guide_panel = InstructionPanel(
             (w // 2 - 360, h // 2 - 230, 720, 420), DISPLAY_NAME,
             [
-                "四指全程伸直，只彎動掌指關節；其中一指彎曲就不算按壓。",
-                "雙藍必須兩手在 0.3 秒內一起按，每個 +1；雙紅都別按，誤觸每個 -1。",
+                "食指、中指、無名指、小指一起往下彎才算按壓；只彎單指不算。",
+                "藍色三角形飄到畫面邊緣前按壓可以接住加分，紅色三角形不要去按。",
                 "左手負責畫面左側、右手負責畫面右側，跟畫面看到的方向直接對應。",
             ],
             self._on_guide_dismissed,
@@ -156,7 +144,6 @@ class Game4Scene(Scene):
         self.right_flash_until = 0.0
         self._pending_transition = None
 
-        self.retry_button = Button((w // 2 - 100, h - PADDING - 56, 200, 56), "再玩一次", on_click=lambda: self._on_level_selected(self.selected_level["level_id"]))
         self.back_button = Button((PADDING, h - PADDING - 56, 200, 56), "返回主選單", on_click=self._go_back)
 
     def _go_back(self):
@@ -185,11 +172,15 @@ class Game4Scene(Scene):
             self.level_select_widget.handle_event(event)
         if self.state == "result":
             self.back_button.handle_event(event)
-            self.retry_button.handle_event(event)
         return None
 
     def update(self, ctx, dt):
-        # 每次新偵測到有效下壓即可判定；沒有新攝影機結果時不沿用舊按壓得分。
+        # 按壓「確認」是一次性的脈衝，只能在偵測到的當下那個 pygame 影格生效。
+        # 攝影機硬體幀率(~30fps)比 pygame 的畫面更新率(~60fps)低，很多影格根本
+        # 沒有新的攝影機畫面可處理；如果 confirmed 旗標留著不重置，沒有新畫面
+        # 的那幾格會沿用上一次的舊值，導致按壓事件「延續」到下一顆剛好飄進判定
+        # 區的三角形，變成沒真的按也算命中。每幀一開始就重置，確保只有真的跑過
+        # _process_frame() 且這幀剛好偵測到按壓，才會是 True。
         self.left_press_confirmed = False
         self.right_press_confirmed = False
 
@@ -237,16 +228,11 @@ class Game4Scene(Scene):
         if self.state != "playing":
             return
 
-        # Use the same four-finger posture check as the saber. A currently
-        # pressed hand is active immediately, without a release/arming step.
-        for side, landmarks in (("left", left_landmarks), ("right", right_landmarks)):
-            posture = _press_posture(landmarks, w / h)
-            posture["paddle_angle"] = cfg.PADDLE_SWING_DEG if posture["pressed"] else 0.0
-            self.hand_postures[side] = posture
-            if posture["valid"]:
-                posture["reason"] = "已按下" if posture["pressed"] else "四指伸直，請一起往下彎"
-            posture["press_confirmed"] = posture["pressed"]
-            setattr(self, side + "_press_confirmed", posture["pressed"])
+        # MediaPipe「Left」控制畫面左側，「Right」控制畫面右側，直接對應
+        # （見檔頭說明）。每幀單獨判斷「現在食指是不是彎的」，不記錄歷史狀態，
+        # 見 motion.py::is_finger_bent() 的說明。
+        self.left_press_confirmed = left_landmarks is not None and _is_hand_pressed(left_landmarks)
+        self.right_press_confirmed = right_landmarks is not None and _is_hand_pressed(right_landmarks)
 
         now = time.time()
         if self.left_press_confirmed:
@@ -269,9 +255,6 @@ class Game4Scene(Scene):
         self.state_start_time = now
         self.play_start_time = now
         self.triangles = []
-        self.max_possible_score = 0
-        self._pair_id = 0
-        self.hand_postures = {}
         self.combo_state = scoring.ComboState()
         self.left_flash_until = 0.0
         self.right_flash_until = 0.0
@@ -289,21 +272,10 @@ class Game4Scene(Scene):
         elapsed_sec = now - self.play_start_time
         level = self.selected_level
 
-        if elapsed_sec >= level["duration_sec"]:
-            self._finish_playing(ctx)
-            return
-        speed = level["triangle_speed"]
-        travel = ctx.screen.get_width() * (cfg.PADDLE_OFFSET_RATIO + cfg.HIT_WINDOW_RATIO) / (speed * 60)
-        if elapsed_sec >= self.next_spawn_at and elapsed_sec + travel < level["duration_sec"]:
-            color = self._random_color()
-            self._pair_id += 1
-            for side in ("left", "right"):
-                tri = Triangle(side, color, speed)
-                tri.pair_id = self._pair_id
-                tri.pressed_at = None
-                self.triangles.append(tri)
-            if color == "blue":
-                self.max_possible_score += 2
+        if elapsed_sec >= self.next_spawn_at:
+            speed = level["triangle_speed"]
+            self.triangles.append(Triangle("left", self._random_color(), speed))
+            self.triangles.append(Triangle("right", self._random_color(), speed))
             self._schedule_next_spawn(elapsed_sec)
 
         w, _ = ctx.screen.get_size()
@@ -327,32 +299,16 @@ class Game4Scene(Scene):
         for tri in self.triangles:
             if tri.side != side or tri.resolved:
                 continue
-            in_zone = (paddle_offset - window_px) <= tri.distance_px <= (paddle_offset + window_px)
-            if tri.color == "blue" and hasattr(tri, "pair_id"):
-                partner = next(t for t in self.triangles if t is not tri and t.pair_id == tri.pair_id)
-                if in_zone and press_confirmed and tri.pressed_at is None:
-                    tri.pressed_at = now
-                times = [t.pressed_at for t in (tri, partner) if t.pressed_at is not None]
-                success = len(times) == 2 and abs(times[0]-times[1]) <= HAND_SYNC_SECONDS + 1e-9
-                failed = ((times and now-min(times) > HAND_SYNC_SECONDS + 1e-9)
-                          or tri.distance_px > paddle_offset + window_px)
-                if success or failed:
-                    for item in (tri, partner):
-                        before = self.combo_state
-                        self.combo_state = (scoring.apply_press_hit("blue", before) if success
-                                            else scoring.apply_miss("blue", before))
-                        item.resolved = True
-                        self._record_triangle_event(item, now, before,
-                            "雙手同步命中" if success else "雙手未同步／漏接（整組 0 分）")
-                    if success:
-                        _play_sound("hit")
-                continue
+            in_zone = tri.distance_px >= (paddle_offset - window_px)
             before = self.combo_state
             if in_zone and press_confirmed:
                 self.combo_state = scoring.apply_press_hit(tri.color, self.combo_state)
                 tri.resolved = True
                 self._record_triangle_event(tri, now, before, "命中藍色" if tri.color == "blue" else "誤觸紅色")
-                _play_sound("hit" if tri.color == "blue" else "error")
+                if tri.color == "blue":
+                    sound = _get_sound("hit")
+                    if sound is not None:
+                        sound.play()
             elif tri.distance_px >= (paddle_offset + window_px):
                 self.combo_state = scoring.apply_miss(tri.color, self.combo_state)
                 tri.resolved = True
@@ -362,15 +318,12 @@ class Game4Scene(Scene):
         recorder = self.arcade_recording
         recorder.event(now, reason, tri,
             recorder.point(self._triangle_x(tri, recorder.width), recorder.height * cfg.SPAWN_Y_RATIO),
-            before.score, self.combo_state.score, side=tri.side, color=tri.color, pair_id=getattr(tri, "pair_id", None),
+            before.score, self.combo_state.score, side=tri.side, color=tri.color,
             combo_before=before.combo, combo_after=self.combo_state.combo)
 
     def _finish_playing(self, ctx):
-        threshold = max(1, math.ceil(self.max_possible_score * 0.8))
-        self.session_result = scoring.compute_session_result(self.combo_state, {**self.selected_level, "pass_score": threshold})
+        self.session_result = scoring.compute_session_result(self.combo_state, self.selected_level)
         details = self.session_result.to_details(self.selected_level["level_id"])
-        details.update(rule_version="triangles_paired_v2", max_possible_score=self.max_possible_score,
-                       pass_score=threshold, pass_ratio=0.8, sync_seconds=HAND_SYNC_SECONDS)
         details["arcade_replay"] = self.arcade_recording.data
         begin_result_save(self, ctx, GAME_ID, self.session_result.score, details)
         self.state_start_time = time.time()
@@ -403,10 +356,10 @@ class Game4Scene(Scene):
         if self.display_frame is None:
             return pygame.Rect(0, 0, 0, 0)
         frame_surface = bgr_frame_to_surface(self.display_frame)
-        video_w = min(220, w // 6)
+        video_w = 380  # 放大過的即時畫面（原本 220 太小）
         video_h = int(video_w * self.display_frame.shape[0] / self.display_frame.shape[1])
         frame_surface = pygame.transform.smoothscale(frame_surface, (video_w, video_h))
-        rect = frame_surface.get_rect(right=w - PADDING, top=70)
+        rect = frame_surface.get_rect(right=w - PADDING, top=PADDING)
         surface.blit(frame_surface, rect)
         return rect
 
@@ -438,12 +391,13 @@ class Game4Scene(Scene):
     def _draw_hand_paddles(self, surface, w, spawn_y):
         """畫出左右手各自控制的「手把」，比照 press_pin 原本 Paddle 的畫法：
         灰色底座 + 疊在底座正上方的彩色手臂（手臂沒按壓時筆直站著，跟底座
-        拼起來看像同一根直立的桿子），偵測到下壓時固定轉動 50 度，繞著『底座頂端』
+        拼起來看像同一根直立的桿子），按壓確認的那一瞬間手臂繞著『底座頂端』
         這個支點往中線那一側甩開，兩側都是往中線甩、不是各自固定往同一個
         絕對方向甩（不然其中一側看起來會是往外甩，跟另一側方向不對稱）。
         手把位置放在判定區邊界，跟三角形進入判定區的位置對齊；左右 side 對應
         到哪隻手直接依畫面方向對應，不做鏡像交叉（見檔頭說明）。
         """
+        now = time.time()
         half_w = w / 2.0
         hit_zone_px = w * cfg.PADDLE_OFFSET_RATIO
         pw, ph = cfg.PADDLE_WIDTH, cfg.PADDLE_HEIGHT
@@ -452,9 +406,9 @@ class Game4Scene(Scene):
         # 三角形飛行的高度對齊。
         base_top_y = spawn_y
 
-        for x, color, landmarks, side in (
-            (half_w - hit_zone_px, cfg.LEFT_HAND_COLOR, self.left_landmarks, "left"),
-            (half_w + hit_zone_px, cfg.RIGHT_HAND_COLOR, self.right_landmarks, "right"),
+        for x, color, landmarks, flash_until, side in (
+            (half_w - hit_zone_px, cfg.LEFT_HAND_COLOR, self.left_landmarks, self.left_flash_until, "left"),
+            (half_w + hit_zone_px, cfg.RIGHT_HAND_COLOR, self.right_landmarks, self.right_flash_until, "right"),
         ):
             base_rect = pygame.Rect(int(x - pw / 2), int(base_top_y), pw, ph)
             pygame.draw.rect(surface, (180, 180, 180), base_rect)
@@ -462,17 +416,17 @@ class Game4Scene(Scene):
             if landmarks is None:
                 continue
 
-            posture = self.hand_postures.get(side, {})
-            angle = math.radians(posture.get("paddle_angle", 0.0))
-            direction = 1 if side == "left" else -1
-            dx, dy = direction * math.sin(angle), -math.cos(angle)
-            # Rotate around the base, not the rotated image's bounding box.
-            nx, ny = -dy * pw / 2, dx * pw / 2
-            tip_x, tip_y = x + dx * ph, base_top_y + dy * ph
-            if not posture.get("valid", False):
-                color = (100, 100, 110)
-            pygame.draw.polygon(surface, color, [(x-nx, base_top_y-ny),
-                (x+nx, base_top_y+ny), (tip_x+nx, tip_y+ny), (tip_x-nx, tip_y-ny)])
+            angle = 0.0
+            if now < flash_until:
+                # 左手把往右甩（正角度=逆時針=頂端往左，所以左手把要用負角度
+                # 才會往中線/右邊甩）、右手把往左甩，兩側都是甩向中線。
+                angle = -cfg.PADDLE_SWING_DEG if side == "left" else cfg.PADDLE_SWING_DEG
+
+            arm_surf = pygame.Surface((pw, ph), pygame.SRCALPHA)
+            arm_surf.fill(color)
+            rotated = pygame.transform.rotate(arm_surf, angle)
+            arm_rect = rotated.get_rect(midbottom=(int(x), int(base_top_y)))
+            surface.blit(rotated, arm_rect)
 
     def _draw_playing(self, surface, w, h):
         spawn_y = int(h * cfg.SPAWN_Y_RATIO)
@@ -496,10 +450,6 @@ class Game4Scene(Scene):
         time_font = get_font(22)
         time_text = time_font.render(f"剩餘時間 {remaining:.0f}s", True, COLOR_TEXT)
         surface.blit(time_text, time_text.get_rect(centerx=w // 2, top=130))
-        for i, side in enumerate(("left", "right")):
-            posture = self.hand_postures.get(side, {"reason": "等待入鏡"})
-            label = get_font(18).render(("左手：" if side == "left" else "右手：") + posture["reason"], True, COLOR_TEXT)
-            surface.blit(label, (PADDING, 165 + i*26))
 
     def _draw_result(self, surface, w, h):
         score_font = get_font(72)
@@ -515,8 +465,4 @@ class Game4Scene(Scene):
             f"最高連擊 {self.session_result.max_combo}　{pass_label}", True, pass_color)
         surface.blit(info, info.get_rect(centerx=w // 2, top=h // 2 - 10))
 
-        threshold = max(1, math.ceil(self.max_possible_score * 0.8))
-        rule = get_font(22).render(f"本局可得 {self.max_possible_score} 分　過關需 {threshold} 分（80%）", True, COLOR_TEXT)
-        surface.blit(rule, rule.get_rect(centerx=w // 2, top=h // 2 + 50))
         self.back_button.draw(surface)
-        self.retry_button.draw(surface)

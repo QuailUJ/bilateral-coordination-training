@@ -859,41 +859,8 @@ def test_saber_cannot_rotate_across_center(ctx):
     assert scene.right_sword.angle_deg <= 90
 
 
-@pytest.mark.parametrize("delay,expected", [(0.0,2),(.3,2),(.301,0),(None,0)])
-def test_triangle_pairs_require_two_presses(ctx, monkeypatch, delay, expected):
-    from games.game4_bilateral_press import scene as module
-    monkeypatch.setattr(module,"_get_sound",lambda key:None)
-    scene=module.Game4Scene(); scene.on_enter(ctx)
-    scene.selected_level=dict(scene.level_options[0]); scene._start_playing(0)
-    w=ctx.screen.get_width()
-    for side in ("left","right"):
-        tri=module.Triangle(side,"blue",0);tri.pair_id=1;tri.pressed_at=None
-        tri.distance_px=w*module.cfg.PADDLE_OFFSET_RATIO
-        scene.triangles.append(tri)
-    scene._resolve_triangles("left",True,w,1)
-    assert scene.combo_state.score==0
-    if delay is not None:
-        scene._resolve_triangles("right",True,w,1+delay)
-    scene._resolve_triangles("left",False,w,2)
-    assert scene.combo_state.score==expected
-    assert all(tri.resolved for tri in scene.triangles)
-    assert sum(e["delta"] for e in scene.arcade_recording.data["events"])==expected
-    scene._resolve_triangles("right",True,w,2)
-    assert scene.combo_state.score==expected
 
 
-@pytest.mark.parametrize("color,expected",[("blue",2),("red",0)])
-def test_triangle_spawn_colors_match_and_denominator_counts_blue(ctx, monkeypatch,color,expected):
-    from games.game4_bilateral_press import scene as module
-    scene=module.Game4Scene();scene.on_enter(ctx)
-    scene.selected_level=dict(scene.level_options[0]);scene._start_playing(0)
-    scene.left_press_confirmed=scene.right_press_confirmed=False
-    monkeypatch.setattr(scene,"_random_color",lambda:color)
-    scene._update_playing(ctx,0,2)
-    assert len(scene.triangles)==2
-    assert {tri.color for tri in scene.triangles}=={color}
-    assert len({tri.pair_id for tri in scene.triangles})==1
-    assert scene.max_possible_score==expected
 
 
 @pytest.mark.parametrize("game",[0,1])
@@ -913,7 +880,7 @@ def test_timed_training_pass_threshold(ctx,monkeypatch,game,score,passed):
     assert scene.sync_tracker.score==0
 
 
-@pytest.mark.parametrize("game",[2,3])
+@pytest.mark.parametrize("game",[2])
 def test_arcade_pass_ratio_uses_actual_available_targets(ctx,game):
     from games.game3_lightsaber_marble.scene import Game3Scene
     from games.game4_bilateral_press.scene import Game4Scene
@@ -947,146 +914,3 @@ def test_saber_pointing_down_is_not_activated_by_boundary_clamp(ctx):
     scene.left_sword.update_towards(-90)
     scene.right_sword.update_towards(-90)
     assert not scene.left_sword.active and not scene.right_sword.active
-
-
-@pytest.mark.parametrize('press_kind,expected', [('both', 2), ('left_only', 0), ('curled', 0)])
-@pytest.mark.parametrize('flex', [50, 60])
-def test_triangle_realistic_straight_finger_press_moves_paddles_and_scores(ctx, monkeypatch, press_kind, expected, flex):
-    import numpy as np
-    from test_straight_hand import anatomical_pose
-    from games.game4_bilateral_press import scene as module
-    played = []
-    monkeypatch.setattr(module, '_play_sound', played.append)
-    scene = module.Game4Scene(); scene.on_enter(ctx)
-    scene.selected_level = dict(scene.level_options[0]); scene._start_playing(0)
-    scene.next_spawn_at = 999
-    frame = np.zeros((480, 640, 3), np.uint8)
-    timer = SimpleNamespace(now=1.0)
-    monkeypatch.setattr(game_time, 'time', lambda: timer.now)
-    def feed(flex):
-        hands = [anatomical_pose(flex), anatomical_pose(flex)]
-        if press_kind == 'left_only':
-            hands[1] = anatomical_pose(0)
-        if press_kind == 'curled' and flex:
-            for hand in hands:
-                hand[7].x += .15
-        result = SimpleNamespace(hand_landmarks=hands, handedness=[
-            [SimpleNamespace(category_name=side, score=.99)] for side in ('Left', 'Right')])
-        scene._process_frame(frame, None, result)
-        scene._update_playing(ctx, 0, timer.now)
-    feed(0)
-    assert not scene.left_press_confirmed and not scene.right_press_confirmed
-    neutral_snapshot = scene.arcade_recording.data['frames'][-1]['postures']
-    for side in ('left', 'right'):
-        tri = module.Triangle(side, 'blue', 0)
-        tri.pair_id=1; tri.pressed_at=None
-        tri.distance_px=ctx.screen.get_width()*module.cfg.PADDLE_OFFSET_RATIO
-        scene.triangles.append(tri)
-    timer.now = 1.1
-    feed(flex)
-    if press_kind == 'both':
-        assert scene.left_flash_until > timer.now and scene.right_flash_until > timer.now
-    assert scene.combo_state.score == expected
-    assert played == (['hit'] if expected else [])
-    assert sum(e['delta'] for e in scene.arcade_recording.data['events']) == expected
-    assert not neutral_snapshot['left']['pressed']
-    timer.now = 1.2
-    feed(flex)
-    assert scene.left_press_confirmed == (press_kind != 'curled')
-    assert scene.right_press_confirmed == (press_kind == 'both')
-    assert scene.combo_state.score == expected
-
-
-@pytest.mark.parametrize('gap', [.1, .5])
-def test_triangle_press_is_immediate_on_entry_and_after_tracking_gap(ctx, monkeypatch, gap):
-    import numpy as np
-    from test_straight_hand import anatomical_pose
-    from games.game4_bilateral_press import scene as module
-    scene = module.Game4Scene(); scene.on_enter(ctx)
-    scene.selected_level = dict(scene.level_options[0]); scene._start_playing(0)
-    timer = SimpleNamespace(now=1.0)
-    monkeypatch.setattr(game_time, 'time', lambda: timer.now)
-    def feed(flex):
-        hands = [] if flex is None else [anatomical_pose(flex)]
-        result = SimpleNamespace(hand_landmarks=hands, handedness=[
-            [SimpleNamespace(category_name='Left', score=.99)]] if hands else [])
-        scene._process_frame(np.zeros((480, 640, 3), np.uint8), None, result)
-    feed(60)
-    assert scene.left_press_confirmed
-    timer.now += .03
-    feed(None)
-    assert not scene.left_press_confirmed
-    timer.now = 1.0 + gap
-    feed(60)
-    assert scene.left_press_confirmed
-    for flex in (60, 60, 0, 60):
-        timer.now += .03
-        feed(flex)
-        assert scene.left_press_confirmed == (flex == 60)
-
-
-def test_triangle_paddles_use_fixed_swing_for_different_pressed_angles(ctx, monkeypatch):
-    import numpy as np
-    from test_straight_hand import anatomical_pose
-    from games.game4_bilateral_press import scene as module
-    from common.arcade_recording import record_triangles
-    scene = module.Game4Scene(); scene.on_enter(ctx)
-    scene.selected_level = dict(scene.level_options[0]); scene._start_playing(0)
-    timer = SimpleNamespace(now=1.0)
-    monkeypatch.setattr(game_time, 'time', lambda: timer.now)
-    def feed(flex):
-        result = SimpleNamespace(hand_landmarks=[anatomical_pose(flex)]*2,
-            handedness=[[SimpleNamespace(category_name=side)] for side in ('Left', 'Right')])
-        scene._process_frame(np.zeros((480, 640, 3), np.uint8), None, result)
-        surface = pygame.Surface(ctx.screen.get_size())
-        scene._draw_hand_paddles(surface, surface.get_width(), 350)
-        return pygame.surfarray.array3d(surface)
-    upright = feed(0)
-    partial = feed(25)
-    assert not scene.left_press_confirmed and not scene.right_press_confirmed
-    assert all(p['paddle_angle'] == 0 for p in scene.hand_postures.values())
-    assert np.array_equal(upright, partial)
-    shallow = feed(50)
-    down = feed(60)
-    assert np.array_equal(shallow, down)
-    assert not np.array_equal(upright, down)
-    assert scene.left_press_confirmed and scene.right_press_confirmed
-    timer.now = 2.0  # The previous 0.15 second animation timeout has expired.
-    surface = pygame.Surface(ctx.screen.get_size())
-    scene._draw_hand_paddles(surface, surface.get_width(), 350)
-    assert np.array_equal(pygame.surfarray.array3d(surface), down)
-    record_triangles(scene, timer.now)
-    snapshot = scene.arcade_recording.data['frames'][-1]['postures']
-    feed(0)
-    assert snapshot['left']['paddle_angle'] == module.cfg.PADDLE_SWING_DEG
-
-
-def test_triangle_sound_retries_failed_load(monkeypatch):
-    from games.game4_bilateral_press import scene as module
-    monkeypatch.setattr(module, '_sound_cache', {'hit': None})
-    monkeypatch.setattr(pygame.mixer, 'get_init', lambda: (44100, -16, 2))
-    sound = object()
-    monkeypatch.setattr(module, '_load_sound', lambda key: sound)
-    assert module._get_sound('hit') is sound
-
-
-def test_triangle_sound_recovers_audio_initialization(monkeypatch):
-    from games.game4_bilateral_press import scene as module
-    monkeypatch.setattr(module, '_sound_cache', {})
-    initialized = []
-    monkeypatch.setattr(pygame.mixer, 'get_init', lambda: None)
-    monkeypatch.setattr(pygame.mixer, 'init', lambda: initialized.append(True))
-    sound = object()
-    monkeypatch.setattr(module, '_load_sound', lambda key: sound)
-    assert module._get_sound('hit') is sound
-    assert initialized == [True]
-
-
-def test_triangle_sound_uses_channel_when_all_busy(monkeypatch):
-    from games.game4_bilateral_press import scene as module
-    sound = SimpleNamespace(play=lambda: None)
-    played = []
-    monkeypatch.setattr(module, '_get_sound', lambda key: sound)
-    monkeypatch.setattr(pygame.mixer, 'find_channel', lambda force: SimpleNamespace(play=played.append))
-    module._play_sound('error')
-    assert played == [sound]
