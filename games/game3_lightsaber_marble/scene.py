@@ -38,6 +38,7 @@ import os
 
 import cv2
 import mediapipe as mp
+from common.camera_hand_tracker import get_hand_frame
 import pygame
 
 from common.camera_hand_tracker import draw_hand_skeleton, estimate_distance_hint
@@ -398,9 +399,9 @@ class Game3Scene(Scene):
         return None
 
     def update(self, ctx, dt):
-        frame, self.last_frame_id, _cam_read_ms = ctx.camera.get_next(self.last_frame_id, timeout=0.0)
+        frame, self.last_frame_id, _cam_read_ms, result = get_hand_frame(ctx, self.last_frame_id)
         if frame is not None:
-            self._process_frame(frame, ctx.landmarker)
+            self._process_frame(frame, ctx.landmarker, result)
 
         if self.state == "playing" and time.time() - self.last_hand_frame_at > 0.3:
             for sword in (self.left_sword, self.right_sword):
@@ -413,10 +414,11 @@ class Game3Scene(Scene):
             return t
         return None
 
-    def _process_frame(self, frame, landmarker):
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        result = landmarker.detect(mp_image)
+    def _process_frame(self, frame, landmarker, result=None):
+        if result is None:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            result = landmarker.detect(mp_image)
 
         frame = cv2.flip(frame, 1)
         h, w = frame.shape[:2]

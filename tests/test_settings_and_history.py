@@ -16,6 +16,47 @@ from scenes.history_scene import HistoryScene
 from scenes.login_scene import LoginScene
 
 
+def test_finger_circle_keeps_more_than_thirty_points_and_breaks_short_gap(ctx, monkeypatch):
+    import numpy as np
+    from test_hand_identity import hand, result
+    from games.game2_finger_vertical.scene import Game2Scene
+    scene = Game2Scene()
+    scene.on_enter(ctx)
+    scene._on_level_selected("CWCW")
+    scene._start_playing(0)
+    left, right = hand(.25), hand(.75)
+    left[8].y = right[8].y = .35
+    frame = np.zeros((480, 640, 3), np.uint8)
+    for i in range(90):
+        monkeypatch.setattr(game_time, "time", lambda i=i: i / 30)
+        observations = result(("Right", right)) if i == 70 else result(("Left", left), ("Right", right))
+        scene._process_frame(frame, None, observations)
+    assert len(scene.left_trail) > 60
+    assert None in scene.left_trail
+    assert scene.left_recognizer.completed == 0
+    assert scene.tracking_interruptions["left"] == 0
+    assert scene.debug_snapshot["left"]["trail_start_t"] == 0
+    scene.draw(ctx, ctx.screen)
+
+
+def test_fist_partial_turn_does_not_erase_the_visible_arc(ctx, monkeypatch):
+    import numpy as np
+    from test_hand_identity import hand, result
+    from games.game1_bilateral_vertical.scene import Game1Scene
+    scene = Game1Scene()
+    scene.on_enter(ctx)
+    scene._on_actions_selected({"left": "CW", "right": "N"})
+    scene._start_playing(0)
+    points = [(.3, .28)] * 5 + [(.36, .33), (.4, .4), (.38, .38), (.38, .395)]
+    for i, (x, y) in enumerate(points):
+        monkeypatch.setattr(game_time, "time", lambda i=i: i / 30)
+        scene._process_frame(np.zeros((480, 640, 3), np.uint8), None,
+                             result(("Left", hand(1-x, y))))
+    assert scene.left_recognizer.completed == 0
+    assert scene.left_recognizer.just_started_lap  # Rejected partial reversal.
+    assert len(scene.left_trail) >= 6
+
+
 @pytest.fixture
 def ctx(tmp_path, monkeypatch):
     pygame.init()

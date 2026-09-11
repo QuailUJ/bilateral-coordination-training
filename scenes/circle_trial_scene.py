@@ -54,8 +54,9 @@ class CircleTrialScene(Game1Scene):
         self.diagnostics["parameters"]["fist"].pop("circle_turn_threshold", None)
         self.diagnostics["parameters"]["fist"]["calibration_s"] = 0
 
-    def _process_frame(self, frame, landmarker):
-        super()._process_frame(frame, landmarker)
+    def _process_frame(self, frame, landmarker, result=None):
+        before = self.right_recognizer.completed if self.right_recognizer is not None else 0
+        super()._process_frame(frame, landmarker, result)
         if self.state != "playing":
             return
         recognizer = self.right_recognizer
@@ -64,7 +65,7 @@ class CircleTrialScene(Game1Scene):
             for key in ("start_t", "end_t"):
                 record[key] -= self.diagnostics["time_origin"]
             self.circle_records.append(record)
-        if recognizer.just_started_lap and recognizer.points:
+        if recognizer.just_started_lap and recognizer.points and recognizer.completed > before:
             self.right_trail = deque((p[1], p[2]) for p in recognizer.points)
             self.trail_start_times["right"] = recognizer._lap_start_t
             self.debug_snapshot["right"]["trail_start_t"] = recognizer._lap_start_t-self.diagnostics["time_origin"]

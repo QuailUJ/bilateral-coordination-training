@@ -1,5 +1,6 @@
 """One renderer for side diagnostics in live training and recorded playback."""
 import pygame
+from functools import lru_cache
 
 from common.cv_pygame import bgr_frame_to_surface
 from ui.theme import COLOR_PANEL, COLOR_TEXT, COLOR_TEXT_MUTED, get_font
@@ -117,21 +118,35 @@ def diagnostic_lines(frame, side):
 
 
 def _wrap(lines, font, width):
+    return [part for line in lines for part in _wrap_line(line, font, width)]
+
+
+@lru_cache(maxsize=2048)
+def _wrap_line(line, font, width):
+    if font.size(line)[0] <= width:
+        return (line,)
     wrapped = []
-    for line in lines:
-        current = ""
-        for char in line:
-            if current and font.size(current + char)[0] > width:
-                wrapped.append(current)
-                current = ""
-            current += char
-        wrapped.append(current)
-    return wrapped
+    while line:
+        low, high = 1, len(line)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if font.size(line[:mid])[0] <= width:
+                low = mid
+            else:
+                high = mid - 1
+        wrapped.append(line[:low])
+        line = line[low:]
+    return tuple(wrapped)
+
+
+@lru_cache(maxsize=512)
+def _render_text(font, text, color):
+    return font.render(text, True, color)
 
 
 def draw_panel(surface, rect, title, lines, color):
     pygame.draw.rect(surface, COLOR_PANEL, rect, border_radius=10)
-    label = get_font(24).render(title, True, color)
+    label = _render_text(get_font(24), title, color)
     surface.blit(label, (rect.x + 12, rect.y + 12))
     for size in range(20, 10, -1):
         font = get_font(size)
@@ -140,7 +155,7 @@ def draw_panel(surface, rect, title, lines, color):
         if len(wrapped) * step <= rect.height - 58:
             break
     for i, text in enumerate(wrapped):
-        label = font.render(text, True, COLOR_TEXT if i < 6 else COLOR_TEXT_MUTED)
+        label = _render_text(font, text, COLOR_TEXT if i < 6 else COLOR_TEXT_MUTED)
         surface.blit(label, (rect.x + 12, rect.y + 48 + i * step))
 
 

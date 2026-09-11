@@ -37,6 +37,7 @@ from collections import deque
 
 import cv2
 import mediapipe as mp
+from common.camera_hand_tracker import get_hand_frame
 import pygame
 
 from common.fist_tracking import FistIdentityTracker, palm_center, PALM_IDS, LOSS_GRACE_S
@@ -305,10 +306,10 @@ class Game1Scene(Scene):
                         continue
                     interrupt_hand(self, side, self.make_recognizer)
         self._camera_index = ctx.camera_index
-        frame, self.last_frame_id, _cam_read_ms = ctx.camera.get_next(self.last_frame_id, timeout=0.0)
+        frame, self.last_frame_id, _cam_read_ms, result = get_hand_frame(ctx, self.last_frame_id)
         if frame is not None:
             self.last_sample_time = time.time()
-            self._process_frame(frame, ctx.landmarker)
+            self._process_frame(frame, ctx.landmarker, result)
         elif time.time() - self.last_sample_time > 0.35:
             self.left_landmarks = self.right_landmarks = None
             self.hand_identity.active.clear()
@@ -328,11 +329,12 @@ class Game1Scene(Scene):
             return t
         return None
 
-    def _process_frame(self, frame, landmarker):
+    def _process_frame(self, frame, landmarker, result=None):
         # 偵測一定要用原始、未翻轉的畫面（見 common.camera_hand_tracker 檔頭說明）。
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        result = getattr(landmarker, "detect_fists", landmarker.detect)(mp_image)
+        if result is None:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            result = getattr(landmarker, "detect_fists", landmarker.detect)(mp_image)
 
         frame = cv2.flip(frame, 1)
         h, w = frame.shape[:2]
@@ -449,7 +451,9 @@ class Game1Scene(Scene):
             recognizer = getattr(self, side + "_recognizer")
             trail = getattr(self, side + "_trail")
             if self.selected_action[side] in ("CW", "CCW"):
-                if recognizer.just_started_lap:
+                before = left_before if side == "left" else right_before
+                if recognizer.just_started_lap and (not isinstance(recognizer, UpperReversalCircle)
+                                                    or recognizer.completed > before):
                     trail.clear()
                     if isinstance(recognizer, UpperReversalCircle):
                         trail.extend((p[1], p[2]) for p in recognizer.points)

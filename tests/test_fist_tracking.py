@@ -148,8 +148,8 @@ def test_video_router_monotonic_timestamp_and_resource_cleanup(monkeypatch):
     monkeypatch.setattr(module, "create_hand_landmarker", create)
     monkeypatch.setattr(module.time, "monotonic_ns", lambda: 100_000_000)
     with module.GameHandLandmarker("test") as detector:
-        assert detector.detect(None) == "image"
+        detector.detect(None)
         detector.detect_fists(None)
         detector.detect_fists(None)
-    assert calls == [100, 101]
-    assert closed == [True, False]
+    assert calls == [100, 101, 102]
+    assert closed == [True]

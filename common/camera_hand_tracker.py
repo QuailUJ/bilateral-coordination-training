@@ -153,32 +153,82 @@ def create_hand_landmarker(model_path, num_hands=2, try_gpu=True, video=False):
 
 
 class GameHandLandmarker:
-    """Keep existing IMAGE inference; lazily use VIDEO for game zero only."""
+    """One VIDEO detector; game updates poll matched frames without blocking UI."""
     def __init__(self, model_path, num_hands=2, try_gpu=True):
         self.options = dict(model_path=model_path, num_hands=num_hands, try_gpu=try_gpu)
-        self.image_detector = create_hand_landmarker(**self.options)
-        self.video_detector = None
+        self.video_detector = create_hand_landmarker(**self.options, video=True)
         self.last_timestamp_ms = -1
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+        self._camera = None
+        self._latest = None
+        self._error = None
 
     def detect(self, image):
-        return self.image_detector.detect(image)
-
-    def detect_fists(self, image):
-        if self.video_detector is None:
-            self.video_detector = create_hand_landmarker(**self.options, video=True)
         timestamp = max(self.last_timestamp_ms + 1, time.monotonic_ns() // 1_000_000)
         self.last_timestamp_ms = timestamp
         return self.video_detector.detect_for_video(image, timestamp)
+
+    def detect_fists(self, image):
+        return self.detect(image)
+
+    def get_next(self, camera, last_frame_id):
+        with self._lock:
+            if camera is not self._camera:
+                self._camera = camera
+                self._latest = None
+                last_frame_id = -1
+            if self._error is not None:
+                raise RuntimeError("手部背景辨識失敗") from self._error
+            packet = self._latest
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._loop, daemon=True)
+            self._thread.start()
+        if packet is None or packet[1] == last_frame_id:
+            return None, last_frame_id, 0.0, None
+        return packet
+
+    def _loop(self):
+        camera, frame_id = None, -1
+        try:
+            while not self._stop.is_set():
+                with self._lock:
+                    current = self._camera
+                if current is not camera:
+                    camera, frame_id = current, -1
+                if camera is None or camera.cap is None:
+                    self._stop.wait(.05)
+                    continue
+                frame, frame_id, read_ms = camera.get_next(frame_id, timeout=.1)
+                if frame is None:
+                    continue
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                result = self.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+                with self._lock:
+                    # Discard an in-flight result when the user switches cameras.
+                    if camera is self._camera:
+                        self._latest = (frame, frame_id, read_ms, result)
+        except Exception as error:
+            with self._lock:
+                self._error = error
 
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
-        try:
-            if self.video_detector is not None:
-                self.video_detector.close()
-        finally:
-            self.image_detector.close()
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+        self.video_detector.close()
+
+
+def get_hand_frame(ctx, last_frame_id):
+    if isinstance(ctx.landmarker, GameHandLandmarker):
+        return ctx.landmarker.get_next(ctx.camera, last_frame_id)
+    # Synchronous detectors are still supported by scene-level tests/tools.
+    frame, frame_id, read_ms = ctx.camera.get_next(last_frame_id, timeout=0.0)
+    return frame, frame_id, read_ms, None
 
 
 def to_pixel(landmark, frame_w, frame_h):

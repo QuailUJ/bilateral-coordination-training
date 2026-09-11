@@ -90,6 +90,8 @@ def snapshot(scene, now, source="camera"):
                 "tip": None, "wrist": None}
         start = getattr(recognizer, "_rep_start_t", getattr(recognizer, "_lap_start_t", getattr(recognizer, "_start_t", None)))
         item["current_start"] = start - scene.diagnostics["time_origin"] if start is not None else None
+        if item["action"] in ("CW", "CCW") and hasattr(scene, "trail_start_times"):
+            item["trail_start_t"] = scene.trail_start_times[side] - scene.diagnostics["time_origin"]
         if landmarks is not None:
             tip = landmarks[scene.hand_identity.tip_id]
             wrist = landmarks[0]

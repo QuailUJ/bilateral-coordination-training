@@ -1,4 +1,5 @@
 """Discard only an interrupted hand's unfinished motion and replay segment."""
+from common import game_time
 
 
 def interrupt_hand(scene, side, recognizer_factory):
@@ -14,5 +15,7 @@ def interrupt_hand(scene, side, recognizer_factory):
         replacement.completed = recognizer.completed
         setattr(scene, side + "_recognizer", replacement)
     getattr(scene, side + "_trail").clear()
+    if hasattr(scene, "trail_start_times"):
+        scene.trail_start_times[side] = game_time.time()
     if scene.trail_recorder is not None:
         scene.trail_recorder.discard_current(side)

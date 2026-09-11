@@ -12,6 +12,7 @@ from collections import deque
 
 import cv2
 import mediapipe as mp
+from common.camera_hand_tracker import get_hand_frame
 import pygame
 
 from common.camera_hand_tracker import draw_hand_skeleton, estimate_distance_hint
@@ -220,10 +221,10 @@ class Game2Scene(Scene):
 
     def update(self, ctx, dt):
         self._camera_index = ctx.camera_index
-        frame, self.last_frame_id, _cam_read_ms = ctx.camera.get_next(self.last_frame_id, timeout=0.0)
+        frame, self.last_frame_id, _cam_read_ms, result = get_hand_frame(ctx, self.last_frame_id)
         if frame is not None:
             self.last_sample_time = time.time()
-            self._process_frame(frame, ctx.landmarker)
+            self._process_frame(frame, ctx.landmarker, result)
         elif time.time() - self.last_sample_time > 0.35:
             self.left_landmarks = self.right_landmarks = None
             self.hand_identity.active.clear()
@@ -241,10 +242,11 @@ class Game2Scene(Scene):
             return t
         return None
 
-    def _process_frame(self, frame, landmarker):
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        result = landmarker.detect(mp_image)
+    def _process_frame(self, frame, landmarker, result=None):
+        if result is None:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            result = landmarker.detect(mp_image)
 
         frame = cv2.flip(frame, 1)
         h, w = frame.shape[:2]
@@ -271,7 +273,9 @@ class Game2Scene(Scene):
                 since = self._missing_since.setdefault(side, now)
                 reason = self.hand_identity.status[side.title()]["reason"]
                 # Brief detector gaps keep the unfinished gesture, never invent points.
-                getattr(self, side + "_trail").clear()
+                trail = getattr(self, side + "_trail")
+                if trail and trail[-1] is not None:
+                    trail.append(None)
                 if reason not in ("no_detection", "stabilizing", "low_confidence") or now-since > 0.35:
                     interrupt_hand(self, side, _make_recognizer)
             else:
@@ -324,14 +328,12 @@ class Game2Scene(Scene):
             synced = self.sync_tracker.update(
                 t_s, self.left_recognizer.completed, self.right_recognizer.completed)
 
-        if self.pair_scoring_mode == "circular":
-            if self.left_recognizer.just_started_lap:
-                self.left_trail.clear()
-            if self.right_recognizer.just_started_lap:
-                self.right_trail.clear()
-        elif synced:
-            self.left_trail.clear()
-            self.right_trail.clear()
+        for side, before in (("left", left_before), ("right", right_before)):
+            recognizer = getattr(self, side + "_recognizer")
+            circular = self.selected_action[side] in ("CW", "CCW")
+            if (circular and recognizer.completed > before) or (not circular and synced):
+                getattr(self, side + "_trail").clear()
+                self.trail_start_times[side] = t_s
 
         if synced:
             self.reward_until = t_s + 0.65
@@ -365,8 +367,10 @@ class Game2Scene(Scene):
         else:
             self.sync_tracker = scoring.ComboSyncTracker(shared_cfg.SYNC_WINDOW_SEC)
         self.trail_recorder = scoring.RepTrailRecorder() if self.pair_scoring_mode is not None else None
-        self.left_trail.clear()
-        self.right_trail.clear()
+        self.trail_start_times = {"left": now, "right": now}
+        for side in ("left", "right"):
+            circular = self.selected_action[side] in ("CW", "CCW")
+            setattr(self, side + "_trail", deque(maxlen=None if circular else _TRAIL_MAX_POINTS))
 
         if self.timed_session:
             self.pair_scoring_mode = None
@@ -473,12 +477,15 @@ class Game2Scene(Scene):
         for trail, color in ((self.left_trail, cfg.LEFT_HAND_COLOR), (self.right_trail, cfg.RIGHT_HAND_COLOR)):
             if len(trail) < 2:
                 continue
-            points = [
-                (video_rect.left + int(tip_x * frame_w * scale_x),
-                 video_rect.top + int(tip_y * frame_h * scale_y))
-                for tip_x, tip_y in trail
-            ]
-            pygame.draw.lines(surface, color, False, points, 3)
+            points = []
+            for point in list(trail) + [None]:
+                if point is None:
+                    if len(points) >= 2:
+                        pygame.draw.lines(surface, color, False, points, 3)
+                    points = []
+                else:
+                    points.append((video_rect.left + int(point[0] * frame_w * scale_x),
+                                   video_rect.top + int(point[1] * frame_h * scale_y)))
 
     def _draw_hand_markers(self, surface, video_rect):
         if video_rect.width == 0 or self.display_frame is None:
