@@ -69,6 +69,13 @@ class FistIdentityTracker(HandIdentityTracker):
                     self.positions.pop(label)
                     self.tips.pop(label, None)
                     self.active.discard(label)
+        # A brief detector dropout must not discard two more valid frames.
+        # Reuse only a recent, established lock; the base class still checks
+        # confidence, separation, jumps and conflicts before accepting a point.
+        for label, seen_at in self.last_seen.items():
+            if (label in self.positions and now - seen_at <= LOSS_GRACE_S
+                    and self.status[label]["reason"] in ("no_detection", "low_confidence")):
+                self.active.add(label)
         tracked = super().update(result, now)
         if self.enabled_side:
             disabled = "Right" if self.enabled_side == "Left" else "Left"

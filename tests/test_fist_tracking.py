@@ -14,6 +14,42 @@ def test_occluded_middle_tip_does_not_reject_palm():
     assert palm_center(left) == (0.75, 0.5)
 
 
+@pytest.mark.parametrize("missing_reason", ["missing", "low_confidence"])
+def test_brief_fist_gap_recovers_on_first_valid_frame(missing_reason):
+    tracker = FistIdentityTracker()
+    left, right = acquire(tracker)
+    observations = (result(("Right", right)) if missing_reason == "missing"
+                    else result(("Left", left, .6), ("Right", right)))
+    assert tracker.update(observations, .1) == (None, right)
+    assert tracker.update(result(("Left", left), ("Right", right)), .13) == (left, right)
+
+
+def test_brief_fist_gap_does_not_bypass_identity_or_jump_checks():
+    tracker = FistIdentityTracker()
+    left, right = acquire(tracker)
+    tracker.update(result(("Right", right)), .1)
+    assert tracker.update(result(("Left", right)), .13) == (None, None)
+    # A hard conflict still requires stable acquisition afterwards.
+    assert tracker.update(result(("Left", left), ("Right", right)), .16)[0] is None
+
+
+def test_long_fist_gap_still_requires_stable_reacquisition():
+    tracker = FistIdentityTracker()
+    left, right = acquire(tracker)
+    tracker.update(result(("Right", right)), .1)
+    assert tracker.update(result(("Left", left), ("Right", right)), .5)[0] is None
+
+
+def test_intermittent_model_gaps_do_not_permanently_hide_a_known_fist():
+    tracker = FistIdentityTracker()
+    left, right = acquire(tracker)
+    for i in range(30):
+        missing = i % 3 == 0
+        detections = result(("Right", right)) if missing else result(("Left", left), ("Right", right))
+        tracked = tracker.update(detections, .1 + i / 30)
+        assert tracked == (None if missing else left, right)
+
+
 def test_one_side_recovers_far_from_old_anchor_while_other_keeps_tracking():
     tracker = FistIdentityTracker()
     left, right = acquire(tracker)
