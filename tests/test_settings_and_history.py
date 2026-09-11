@@ -955,7 +955,8 @@ def test_triangle_realistic_straight_finger_press_moves_paddles_and_scores(ctx, 
     import numpy as np
     from test_straight_hand import anatomical_pose
     from games.game4_bilateral_press import scene as module
-    monkeypatch.setattr(module, '_get_sound', lambda key: None)
+    played = []
+    monkeypatch.setattr(module, '_play_sound', played.append)
     scene = module.Game4Scene(); scene.on_enter(ctx)
     scene.selected_level = dict(scene.level_options[0]); scene._start_playing(0)
     scene.next_spawn_at = 999
@@ -986,6 +987,7 @@ def test_triangle_realistic_straight_finger_press_moves_paddles_and_scores(ctx, 
     if press_kind == 'both':
         assert scene.left_flash_until > timer.now and scene.right_flash_until > timer.now
     assert scene.combo_state.score == expected
+    assert played == (['hit'] if expected else [])
     assert sum(e['delta'] for e in scene.arcade_recording.data['events']) == expected
     assert not neutral_snapshot['left']['pressed']
     timer.now = 1.2
@@ -1023,7 +1025,7 @@ def test_triangle_press_is_immediate_on_entry_and_after_tracking_gap(ctx, monkey
         assert scene.left_press_confirmed == (flex == 60)
 
 
-def test_triangle_paddles_move_before_scoring_threshold_and_stay_down(ctx, monkeypatch):
+def test_triangle_paddles_use_fixed_swing_for_different_pressed_angles(ctx, monkeypatch):
     import numpy as np
     from test_straight_hand import anatomical_pose
     from games.game4_bilateral_press import scene as module
@@ -1042,9 +1044,12 @@ def test_triangle_paddles_move_before_scoring_threshold_and_stay_down(ctx, monke
     upright = feed(0)
     partial = feed(25)
     assert not scene.left_press_confirmed and not scene.right_press_confirmed
-    assert all(20 < p['paddle_angle'] < 30 for p in scene.hand_postures.values())
-    assert np.any(upright != partial)
+    assert all(p['paddle_angle'] == 0 for p in scene.hand_postures.values())
+    assert np.array_equal(upright, partial)
+    shallow = feed(50)
     down = feed(60)
+    assert np.array_equal(shallow, down)
+    assert not np.array_equal(upright, down)
     assert scene.left_press_confirmed and scene.right_press_confirmed
     timer.now = 2.0  # The previous 0.15 second animation timeout has expired.
     surface = pygame.Surface(ctx.screen.get_size())
@@ -1054,3 +1059,34 @@ def test_triangle_paddles_move_before_scoring_threshold_and_stay_down(ctx, monke
     snapshot = scene.arcade_recording.data['frames'][-1]['postures']
     feed(0)
     assert snapshot['left']['paddle_angle'] == module.cfg.PADDLE_SWING_DEG
+
+
+def test_triangle_sound_retries_failed_load(monkeypatch):
+    from games.game4_bilateral_press import scene as module
+    monkeypatch.setattr(module, '_sound_cache', {'hit': None})
+    monkeypatch.setattr(pygame.mixer, 'get_init', lambda: (44100, -16, 2))
+    sound = object()
+    monkeypatch.setattr(module, '_load_sound', lambda key: sound)
+    assert module._get_sound('hit') is sound
+
+
+def test_triangle_sound_recovers_audio_initialization(monkeypatch):
+    from games.game4_bilateral_press import scene as module
+    monkeypatch.setattr(module, '_sound_cache', {})
+    initialized = []
+    monkeypatch.setattr(pygame.mixer, 'get_init', lambda: None)
+    monkeypatch.setattr(pygame.mixer, 'init', lambda: initialized.append(True))
+    sound = object()
+    monkeypatch.setattr(module, '_load_sound', lambda key: sound)
+    assert module._get_sound('hit') is sound
+    assert initialized == [True]
+
+
+def test_triangle_sound_uses_channel_when_all_busy(monkeypatch):
+    from games.game4_bilateral_press import scene as module
+    sound = SimpleNamespace(play=lambda: None)
+    played = []
+    monkeypatch.setattr(module, '_get_sound', lambda key: sound)
+    monkeypatch.setattr(pygame.mixer, 'find_channel', lambda force: SimpleNamespace(play=played.append))
+    module._play_sound('error')
+    assert played == [sound]

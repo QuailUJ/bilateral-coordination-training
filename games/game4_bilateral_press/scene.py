@@ -61,9 +61,24 @@ _sound_cache = {}
 def _get_sound(key):
     # 延遲載入：main.py 要先呼叫 pygame.mixer.init() 之後才能建立 Sound 物件，
     # 而這支檔案在那之前就會被 import。
-    if key not in _sound_cache:
+    if not pygame.mixer.get_init():
+        try:
+            pygame.mixer.init()
+        except pygame.error as error:
+            print(f"[game4_bilateral_press] 音效裝置無法啟動: {error}")
+            return None
+    if _sound_cache.get(key) is None:
         _sound_cache[key] = _load_sound(key)
     return _sound_cache[key]
+
+
+def _play_sound(key):
+    sound = _get_sound(key)
+    if sound is not None and sound.play() is None:
+        # Sound.play silently returns None when all mixer channels are busy.
+        channel = pygame.mixer.find_channel(force=True)
+        if channel is not None:
+            channel.play(sound)
 
 
 _DISTANCE_HINT_TEXT = {
@@ -226,8 +241,7 @@ class Game4Scene(Scene):
         # pressed hand is active immediately, without a release/arming step.
         for side, landmarks in (("left", left_landmarks), ("right", right_landmarks)):
             posture = _press_posture(landmarks, w / h)
-            mcp = posture.get("mcp", [])
-            posture["paddle_angle"] = min(cfg.PADDLE_SWING_DEG, max(0.0, 180.0 - sum(mcp) / len(mcp))) if mcp else 0.0
+            posture["paddle_angle"] = cfg.PADDLE_SWING_DEG if posture["pressed"] else 0.0
             self.hand_postures[side] = posture
             if posture["valid"]:
                 posture["reason"] = "已按下" if posture["pressed"] else "四指伸直，請一起往下彎"
@@ -331,18 +345,14 @@ class Game4Scene(Scene):
                         self._record_triangle_event(item, now, before,
                             "雙手同步命中" if success else "雙手未同步／漏接（整組 0 分）")
                     if success:
-                        sound = _get_sound("hit")
-                        if sound is not None:
-                            sound.play()
+                        _play_sound("hit")
                 continue
             before = self.combo_state
             if in_zone and press_confirmed:
                 self.combo_state = scoring.apply_press_hit(tri.color, self.combo_state)
                 tri.resolved = True
                 self._record_triangle_event(tri, now, before, "命中藍色" if tri.color == "blue" else "誤觸紅色")
-                sound = _get_sound("hit" if tri.color == "blue" else "error")
-                if sound is not None:
-                    sound.play()
+                _play_sound("hit" if tri.color == "blue" else "error")
             elif tri.distance_px >= (paddle_offset + window_px):
                 self.combo_state = scoring.apply_miss(tri.color, self.combo_state)
                 tri.resolved = True
@@ -428,7 +438,7 @@ class Game4Scene(Scene):
     def _draw_hand_paddles(self, surface, w, spawn_y):
         """畫出左右手各自控制的「手把」，比照 press_pin 原本 Paddle 的畫法：
         灰色底座 + 疊在底座正上方的彩色手臂（手臂沒按壓時筆直站著，跟底座
-        拼起來看像同一根直立的桿子），手臂隨四指下彎幅度繞著『底座頂端』
+        拼起來看像同一根直立的桿子），偵測到下壓時固定轉動 50 度，繞著『底座頂端』
         這個支點往中線那一側甩開，兩側都是往中線甩、不是各自固定往同一個
         絕對方向甩（不然其中一側看起來會是往外甩，跟另一側方向不對稱）。
         手把位置放在判定區邊界，跟三角形進入判定區的位置對齊；左右 side 對應
