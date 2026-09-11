@@ -20,7 +20,8 @@ def angle(a, b, c):
     return math.degrees(math.acos(max(-1.0, min(1.0, sum(x*y for x, y in zip(u, v))/magnitude))))
 
 
-def hand_posture(landmarks, aspect=1.0):
+def hand_posture(landmarks, aspect=1.0, *, straight_min=STRAIGHT_MIN_DEG,
+                 press_max=MCP_PRESS_MAX_DEG, sync_spread=MCP_SYNC_SPREAD_DEG):
     if not landmarks or len(landmarks) != 21:
         return {"valid": False, "pressed": False, "reason": "未偵測到完整手部"}
     points = [(p.x*aspect, p.y, getattr(p, "z", 0.0)*aspect) for p in landmarks]
@@ -35,10 +36,10 @@ def hand_posture(landmarks, aspect=1.0):
     # between fingers and must not be mistaken for asynchronous flexion.
     mcp = [angle(palm_back, (0, 0, 0), tuple(b-a for a, b in zip(points[i], points[i+1])))
            for i in (5, 9, 13, 17)]
-    straight = min(pip + dip) >= STRAIGHT_MIN_DEG
-    synchronous = max(mcp)-min(mcp) <= MCP_SYNC_SPREAD_DEG
+    straight = min(pip + dip) >= straight_min
+    synchronous = max(mcp)-min(mcp) <= sync_spread
     valid = straight and synchronous
-    return {"valid": valid, "pressed": valid and max(mcp) <= MCP_PRESS_MAX_DEG,
+    return {"valid": valid, "pressed": valid and max(mcp) <= press_max,
             "reason": ("正常" if valid else "手指中段與指尖需保持伸直" if not straight
                        else "四指請從手掌相接處一起彎動"),
             "pip": pip, "dip": dip, "mcp": mcp, "angle_reference": "common_palm_direction"}

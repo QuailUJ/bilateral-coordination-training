@@ -1,11 +1,16 @@
 """
 games/game4_bilateral_press/config.py - 遊戲三「三角形」可調參數
 
-四指伸直並同步彎動掌指關節；參數位於 common/straight_hand.py。
+四指伸直並同步彎動掌指關節；本遊戲姿勢參數如下。
 雙側同色：雙藍同步按壓才得分，雙紅都不按。每關 90 秒，80% 過關。
 """
 
 # ---- 手勢判定 ----
+STRAIGHT_MIN_DEG = 145.0
+MCP_PRESS_MAX_DEG = 150.0
+MCP_RELEASE_MIN_DEG = 160.0
+MCP_SYNC_SPREAD_DEG = 35.0
+PRESS_TRACKING_GRACE_SEC = 0.30
 # 食指 MCP-PIP-TIP 夾角小於這個值就算彎折成一次按壓（180 度是完全打直，越小
 # 代表彎得越深）。先抓一個大概的中間值，還沒經過真人測試校準。
 FINGER_BENT_MAX_DEG = 130.0

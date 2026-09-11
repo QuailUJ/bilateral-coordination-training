@@ -81,7 +81,12 @@ _COLOR_RGB = {"blue": _BLUE, "red": _RED}
 
 
 def _is_hand_pressed(landmarks, aspect=1.0) -> bool:
-    return hand_posture(landmarks, aspect)["pressed"]
+    return _press_posture(landmarks, aspect)["pressed"]
+
+
+def _press_posture(landmarks, aspect=1.0):
+    return hand_posture(landmarks, aspect, straight_min=cfg.STRAIGHT_MIN_DEG,
+                        press_max=cfg.MCP_PRESS_MAX_DEG, sync_spread=cfg.MCP_SYNC_SPREAD_DEG)
 
 
 class Triangle:
@@ -223,14 +228,25 @@ class Game4Scene(Scene):
         if self.state != "playing":
             return
 
-        # MediaPipe「Left」控制畫面左側，「Right」控制畫面右側，直接對應
-        # （見檔頭說明）。每幀單獨判斷「現在食指是不是彎的」，不記錄歷史狀態，
-        # 見 motion.py::is_finger_bent() 的說明。
+        # Release and press use separate thresholds to avoid repeated pulses
+        # from angle jitter. Brief invalid observations cannot score.
+        now = time.time()
         for side, landmarks in (("left", left_landmarks), ("right", right_landmarks)):
-            posture = hand_posture(landmarks, w / h)
+            posture = _press_posture(landmarks, w / h)
             self.hand_postures[side] = posture
+            if now - self._press_last_valid[side] > cfg.PRESS_TRACKING_GRACE_SEC:
+                self._press_armed[side] = False
             pulse = posture["pressed"] and self._press_armed[side]
-            self._press_armed[side] = posture["valid"] and not posture["pressed"]
+            if posture["valid"]:
+                self._press_last_valid[side] = now
+                if posture["pressed"]:
+                    self._press_armed[side] = False
+                elif min(posture["mcp"]) >= cfg.MCP_RELEASE_MIN_DEG:
+                    self._press_armed[side] = True
+                posture["reason"] = ("已按下，請抬回" if posture["pressed"] else
+                                     "已準備，請往下按" if self._press_armed[side] else "請先抬回準備")
+            posture["press_confirmed"] = pulse
+            posture["press_armed"] = self._press_armed[side]
             setattr(self, side + "_press_confirmed", pulse)
 
         now = time.time()
@@ -257,6 +273,7 @@ class Game4Scene(Scene):
         self.max_possible_score = 0
         self._pair_id = 0
         self._press_armed = {"left": False, "right": False}
+        self._press_last_valid = {"left": float("-inf"), "right": float("-inf")}
         self.hand_postures = {}
         self.combo_state = scoring.ComboState()
         self.left_flash_until = 0.0

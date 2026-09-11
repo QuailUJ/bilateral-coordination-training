@@ -950,7 +950,8 @@ def test_saber_pointing_down_is_not_activated_by_boundary_clamp(ctx):
 
 
 @pytest.mark.parametrize('press_kind,expected', [('both', 2), ('left_only', 0), ('curled', 0)])
-def test_triangle_realistic_straight_finger_press_moves_paddles_and_scores(ctx, monkeypatch, press_kind, expected):
+@pytest.mark.parametrize('flex', [32, 60])
+def test_triangle_realistic_straight_finger_press_moves_paddles_and_scores(ctx, monkeypatch, press_kind, expected, flex):
     import numpy as np
     from test_straight_hand import anatomical_pose
     from games.game4_bilateral_press import scene as module
@@ -981,13 +982,43 @@ def test_triangle_realistic_straight_finger_press_moves_paddles_and_scores(ctx, 
         tri.distance_px=ctx.screen.get_width()*module.cfg.PADDLE_OFFSET_RATIO
         scene.triangles.append(tri)
     timer.now = 1.1
-    feed(60)
+    feed(flex)
     if press_kind == 'both':
         assert scene.left_flash_until > timer.now and scene.right_flash_until > timer.now
     assert scene.combo_state.score == expected
     assert sum(e['delta'] for e in scene.arcade_recording.data['events']) == expected
     assert not neutral_snapshot['left']['pressed']
     timer.now = 1.2
-    feed(60)
+    feed(flex)
     assert not scene.left_press_confirmed and not scene.right_press_confirmed
     assert scene.combo_state.score == expected
+
+
+@pytest.mark.parametrize('gap,expected', [(.1, True), (.5, False)])
+def test_triangle_press_survives_only_short_tracking_gap(ctx, monkeypatch, gap, expected):
+    import numpy as np
+    from test_straight_hand import anatomical_pose
+    from games.game4_bilateral_press import scene as module
+    scene = module.Game4Scene(); scene.on_enter(ctx)
+    scene.selected_level = dict(scene.level_options[0]); scene._start_playing(0)
+    timer = SimpleNamespace(now=1.0)
+    monkeypatch.setattr(game_time, 'time', lambda: timer.now)
+    def feed(flex):
+        hands = [] if flex is None else [anatomical_pose(flex)]
+        result = SimpleNamespace(hand_landmarks=hands, handedness=[
+            [SimpleNamespace(category_name='Left', score=.99)]] if hands else [])
+        scene._process_frame(np.zeros((480, 640, 3), np.uint8), None, result)
+    feed(0)
+    timer.now += .03
+    feed(None)
+    assert not scene.left_press_confirmed
+    timer.now = 1.0 + gap
+    feed(32)
+    assert scene.left_press_confirmed == expected
+    for flex in (28, 32, 28, 32):
+        timer.now += .03
+        feed(flex)
+        assert not scene.left_press_confirmed
+    feed(0)
+    feed(32)
+    assert scene.left_press_confirmed
