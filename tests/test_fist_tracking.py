@@ -19,7 +19,7 @@ def test_brief_fist_gap_recovers_on_first_valid_frame(missing_reason):
     tracker = FistIdentityTracker()
     left, right = acquire(tracker)
     observations = (result(("Right", right)) if missing_reason == "missing"
-                    else result(("Left", left, .6), ("Right", right)))
+                    else result(("Left", left, .49), ("Right", right)))
     assert tracker.update(observations, .1) == (None, right)
     assert tracker.update(result(("Left", left), ("Right", right)), .13) == (left, right)
 
@@ -48,6 +48,46 @@ def test_intermittent_model_gaps_do_not_permanently_hide_a_known_fist():
         detections = result(("Right", right)) if missing else result(("Left", left), ("Right", right))
         tracked = tracker.update(detections, .1 + i / 30)
         assert tracked == (None if missing else left, right)
+
+
+def test_known_fists_keep_tracking_when_handedness_confidence_drops():
+    tracker = FistIdentityTracker()
+    _, right = acquire(tracker)
+    for i in range(30):
+        left = hand(.25 + i * .002)
+        assert tracker.update(result(("Left", left, .6), ("Right", right, .74)), .1 + i / 30) == (left, right)
+        assert tracker.status["Left"]["confidence"] == .6
+        assert tracker.status["Left"]["reason"] == "tracked_by_position"
+
+
+def test_low_confidence_cannot_create_new_fist_identity():
+    tracker = FistIdentityTracker()
+    for i in range(10):
+        assert tracker.update(result(("Left", hand(.25), .6), ("Right", hand(.75), .6)), i / 30) == (None, None)
+
+
+@pytest.mark.parametrize("x,when,score", [(.40, .1, .6), (.75, .1, .6), (.25, .5, .6), (.25, .1, .49)])
+def test_position_continuation_rejects_jumps_other_hand_expired_lock_and_very_low_confidence(x, when, score):
+    tracker = FistIdentityTracker()
+    _, right = acquire(tracker)
+    assert tracker.update(result(("Left", hand(x), score), ("Right", right)), when)[0] is None
+
+
+def test_position_continuation_never_invents_a_missing_fist():
+    tracker = FistIdentityTracker()
+    _, right = acquire(tracker)
+    assert tracker.update(result(("Right", right)), .1) == (None, right)
+
+
+def test_hard_identity_conflict_cannot_recover_using_low_confidence():
+    tracker = FistIdentityTracker()
+    left, right = acquire(tracker)
+    tracker.update(result(("Left", right), ("Right", left)), .1)
+    for i in range(6):
+        assert tracker.update(result(("Left", left, .6), ("Right", right, .6)), .13 + i * .02) == (None, None)
+    for i in range(3):
+        tracked = tracker.update(result(("Left", left), ("Right", right)), .26 + i * .02)
+        assert tracked == ((left, right) if i == 2 else (None, None))
 
 
 def test_one_side_recovers_far_from_old_anchor_while_other_keeps_tracking():

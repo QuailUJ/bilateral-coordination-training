@@ -6,6 +6,7 @@ from common.cv_pygame import bgr_frame_to_surface
 from ui.theme import COLOR_PANEL, COLOR_TEXT, COLOR_TEXT_MUTED, get_font
 
 REASONS = {
+    "tracked_by_position": "依拳頭位置延續追蹤",
     "tracked": "追蹤正常", "no_detection": "未偵測到手", "low_confidence": "左右手信心不足",
     "invalid_coordinates": "座標無效", "duplicate_label": "左右手標籤重複",
     "hands_overlap": "雙手太靠近／重疊", "need_both_hands": "請雙手分開入鏡",

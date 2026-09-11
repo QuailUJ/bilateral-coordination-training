@@ -26,6 +26,9 @@ class HandIdentityTracker:
     def _point(landmarks, index):
         return (landmarks[index].x, landmarks[index].y)
 
+    def _minimum_confidence(self, label, landmarks, now):
+        return self.confidence
+
     def update(self, result, now):
         self.status = {side: {"reason": "no_detection", "accepted": False} for side in ("Left", "Right")}
         if self.last_update_t is not None and now - self.last_update_t > 0.35:
@@ -45,7 +48,8 @@ class HandIdentityTracker:
                     point = self._point(landmarks, index)
                     if all(math.isfinite(value) for value in point):
                         self.status[label][key] = list(point)
-            if label not in ("Left", "Right") or not math.isfinite(category.score) or category.score < self.confidence:
+            threshold = self._minimum_confidence(label, landmarks, now)
+            if label not in ("Left", "Right") or not math.isfinite(category.score) or category.score < threshold:
                 if label in self.status:
                     self.status[label]["reason"] = "low_confidence"
                 continue

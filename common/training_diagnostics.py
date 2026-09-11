@@ -40,14 +40,16 @@ def start_diagnostics(scene, now):
             sync_seconds=timed_training.SYNC_SECONDS)
     scene.debug_snapshot = None
     if getattr(scene.hand_identity, "tracking_point_kind", "") == "palm_center":
-        from common.fist_tracking import PALM_IDS, REACQUIRE_S, LOSS_GRACE_S
+        from common.fist_tracking import PALM_IDS, REACQUIRE_S, LOSS_GRACE_S, CONTINUITY_CONFIDENCE, CONTINUITY_DISTANCE
         from games.game1_bilateral_vertical.fist_motion import CALIBRATION_S, CIRCLE_RADIUS
         scene.diagnostics.update(version=5, tip_landmark=None, tracking_point_kind="palm_center",
                                  tracking_landmarks=list(PALM_IDS), reference_kind="observed_top_reversal",
                                  algorithm="upper_reversal_circle_v1")
         scene.diagnostics["circle_direction_convention"] = "display_clockwise_top_right_bottom_left"
         scene.diagnostics["parameters"]["fist"] = dict(reacquire_s=REACQUIRE_S, loss_grace_s=LOSS_GRACE_S,
-                                                       calibration_s=0, axis_reversal_on=0.012, axis_calibration_s=0)
+                                                       calibration_s=0, axis_reversal_on=0.012, axis_calibration_s=0,
+                                                       continuity_confidence=CONTINUITY_CONFIDENCE,
+                                                       continuity_distance=CONTINUITY_DISTANCE)
         scene.diagnostics["parameters"]["circle_trial"] = dict(reversal=.012, minimum_span=.06,
             minimum_winding_degrees=270, minimum_direction_consistency=.65)
 
