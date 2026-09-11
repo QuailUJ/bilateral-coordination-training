@@ -253,6 +253,9 @@ class LightSword(pygame.sprite.Sprite):
         self.color = color
         self.angle_deg = 90.0
         self.active = False
+        self.target_angle_deg = None
+        self._allow_scoring = False
+        self._render_state = None
         # sword_image 是已經縮放成高度等於 length 的原圖（朝上畫、劍柄在下緣
         # 正中央），None 代表找不到圖片檔，退回原生圖形畫。
         self._sword_image = sword_image
@@ -260,11 +263,27 @@ class LightSword(pygame.sprite.Sprite):
         self.rect = self.image.get_rect(center=pivot)
 
     def update_towards(self, target_angle_deg):
+        self.set_target(target_angle_deg)
+        self.advance(1 / 30)
+
+    def set_target(self, target_angle_deg, allow_scoring=True):
+        self.target_angle_deg = target_angle_deg
+        self._allow_scoring = allow_scoring
+        if target_angle_deg is None or not allow_scoring:
+            self.active = False
+
+    def advance(self, dt):
+        target_angle_deg = self.target_angle_deg
+        if target_angle_deg is None:
+            self.active = False
+            self._rebuild()
+            return
         pointing_up = motion.is_within_active_arc(target_angle_deg, cfg.ACTIVE_ARC_MIN_DEG, cfg.ACTIVE_ARC_MAX_DEG)
         lo, hi = getattr(self, "allowed_arc", (cfg.ACTIVE_ARC_MIN_DEG, cfg.ACTIVE_ARC_MAX_DEG))
         target_angle_deg = max(lo, min(hi, target_angle_deg))
-        self.angle_deg = max(lo, min(hi, motion.smooth_angle_towards(self.angle_deg, target_angle_deg, cfg.ANGLE_SMOOTH_LERP)))
-        self.active = pointing_up and motion.is_within_active_arc(self.angle_deg, cfg.ACTIVE_ARC_MIN_DEG, cfg.ACTIVE_ARC_MAX_DEG)
+        alpha = 1 - (1 - cfg.ANGLE_SMOOTH_LERP) ** (max(0, dt) * 30)
+        self.angle_deg = max(lo, min(hi, motion.smooth_angle_towards(self.angle_deg, target_angle_deg, alpha)))
+        self.active = self._allow_scoring and pointing_up and motion.is_within_active_arc(self.angle_deg, cfg.ACTIVE_ARC_MIN_DEG, cfg.ACTIVE_ARC_MAX_DEG)
         self._rebuild()
 
     def _rebuild(self):
@@ -272,6 +291,10 @@ class LightSword(pygame.sprite.Sprite):
         判定範圍已經收窄到只比劍身寬一點點（見 config.py::HIT_ANGLE_TOLERANCE_DEG
         的說明），劍身本身的寬度已經足以代表判定範圍，不需要額外畫框框標示。
         """
+        state = (self.angle_deg, self.active)
+        if state == self._render_state:
+            return
+        self._render_state = state
         size = int(self.length * 2 + 8)
         surf = pygame.Surface((size, size), pygame.SRCALPHA)
         center = (size // 2, size // 2)
@@ -405,8 +428,10 @@ class Game3Scene(Scene):
 
         if self.state == "playing" and time.time() - self.last_hand_frame_at > 0.3:
             for sword in (self.left_sword, self.right_sword):
-                sword.active = False
-                sword._rebuild()
+                sword.set_target(None, False)
+        if self.state == "playing":
+            for sword in (self.left_sword, self.right_sword):
+                sword.advance(dt)
         self._advance_state(ctx, dt)
 
         if self._pending_transition is not None:
@@ -450,11 +475,10 @@ class Game3Scene(Scene):
                                            ("left", left_landmarks, self.right_sword)):
                 posture = hand_posture(landmarks, w / h)
                 self.hand_postures[side] = posture
-                if posture["valid"]:
-                    sword.update_towards(_hand_pointing_angle(landmarks))
+                if landmarks is not None and all(math.isfinite(p.x) and math.isfinite(p.y) for p in landmarks):
+                    sword.set_target(_hand_pointing_angle(landmarks), allow_scoring=posture["valid"])
                 else:
-                    sword.active = False
-                    sword._rebuild()
+                    sword.set_target(None, False)
 
     def _advance_state(self, ctx, dt):
         now = time.time()
@@ -470,6 +494,10 @@ class Game3Scene(Scene):
         self.state = "playing"
         self.state_start_time = now
         self.play_start_time = now
+        self.hand_postures = {}
+        self.last_hand_frame_at = 0.0
+        for sword in (self.left_sword, self.right_sword):
+            sword.set_target(None, False)
         self.marbles.empty()
         self.max_possible_score = 0
         self.score = 0
@@ -631,6 +659,10 @@ class Game3Scene(Scene):
         remaining = max(0.0, self.selected_level["play_time_sec"] - elapsed)
         msg = font.render(f"分數 {self.score}　剩餘時間 {remaining:.0f}s", True, COLOR_TEXT)
         surface.blit(msg, msg.get_rect(centerx=w // 2, top=90))
+        for i, side in enumerate(("left", "right")):
+            posture = self.hand_postures.get(side, {"reason": "等待入鏡"})
+            label = get_font(18).render(("左手：" if side == "left" else "右手：") + posture["reason"], True, COLOR_TEXT)
+            surface.blit(label, (PADDING, 165 + i * 26))
 
     def _draw_result(self, surface, w, h):
         score_font = get_font(72)

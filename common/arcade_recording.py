@@ -1,5 +1,6 @@
 """Record actual arena states and score transitions, never re-simulate randomness."""
 import math
+import copy
 
 
 class ArcadeRecording:
@@ -25,6 +26,8 @@ class ArcadeRecording:
             "score_before": before, "score_after": after, "delta": after-before, **extra})
 
     def frame(self, now, **state):
+        if "postures" in state:
+            state["postures"] = copy.deepcopy(state["postures"])
         self.data["frames"].append({"t": round(max(0, now-self.start), 5), **state})
 
 

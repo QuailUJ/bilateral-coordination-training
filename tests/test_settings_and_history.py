@@ -947,3 +947,47 @@ def test_saber_pointing_down_is_not_activated_by_boundary_clamp(ctx):
     scene.left_sword.update_towards(-90)
     scene.right_sword.update_towards(-90)
     assert not scene.left_sword.active and not scene.right_sword.active
+
+
+@pytest.mark.parametrize('press_kind,expected', [('both', 2), ('left_only', 0), ('curled', 0)])
+def test_triangle_realistic_straight_finger_press_moves_paddles_and_scores(ctx, monkeypatch, press_kind, expected):
+    import numpy as np
+    from test_straight_hand import anatomical_pose
+    from games.game4_bilateral_press import scene as module
+    monkeypatch.setattr(module, '_get_sound', lambda key: None)
+    scene = module.Game4Scene(); scene.on_enter(ctx)
+    scene.selected_level = dict(scene.level_options[0]); scene._start_playing(0)
+    scene.next_spawn_at = 999
+    frame = np.zeros((480, 640, 3), np.uint8)
+    timer = SimpleNamespace(now=1.0)
+    monkeypatch.setattr(game_time, 'time', lambda: timer.now)
+    def feed(flex):
+        hands = [anatomical_pose(flex), anatomical_pose(flex)]
+        if press_kind == 'left_only':
+            hands[1] = anatomical_pose(0)
+        if press_kind == 'curled' and flex:
+            for hand in hands:
+                hand[7].x += .15
+        result = SimpleNamespace(hand_landmarks=hands, handedness=[
+            [SimpleNamespace(category_name=side, score=.99)] for side in ('Left', 'Right')])
+        scene._process_frame(frame, None, result)
+        scene._update_playing(ctx, 0, timer.now)
+    feed(0)
+    assert all(scene._press_armed.values())
+    neutral_snapshot = scene.arcade_recording.data['frames'][-1]['postures']
+    for side in ('left', 'right'):
+        tri = module.Triangle(side, 'blue', 0)
+        tri.pair_id=1; tri.pressed_at=None
+        tri.distance_px=ctx.screen.get_width()*module.cfg.PADDLE_OFFSET_RATIO
+        scene.triangles.append(tri)
+    timer.now = 1.1
+    feed(60)
+    if press_kind == 'both':
+        assert scene.left_flash_until > timer.now and scene.right_flash_until > timer.now
+    assert scene.combo_state.score == expected
+    assert sum(e['delta'] for e in scene.arcade_recording.data['events']) == expected
+    assert not neutral_snapshot['left']['pressed']
+    timer.now = 1.2
+    feed(60)
+    assert not scene.left_press_confirmed and not scene.right_press_confirmed
+    assert scene.combo_state.score == expected
