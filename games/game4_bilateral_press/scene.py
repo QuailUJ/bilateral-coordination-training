@@ -226,6 +226,8 @@ class Game4Scene(Scene):
         # pressed hand is active immediately, without a release/arming step.
         for side, landmarks in (("left", left_landmarks), ("right", right_landmarks)):
             posture = _press_posture(landmarks, w / h)
+            mcp = posture.get("mcp", [])
+            posture["paddle_angle"] = min(cfg.PADDLE_SWING_DEG, max(0.0, 180.0 - sum(mcp) / len(mcp))) if mcp else 0.0
             self.hand_postures[side] = posture
             if posture["valid"]:
                 posture["reason"] = "已按下" if posture["pressed"] else "四指伸直，請一起往下彎"
@@ -426,13 +428,12 @@ class Game4Scene(Scene):
     def _draw_hand_paddles(self, surface, w, spawn_y):
         """畫出左右手各自控制的「手把」，比照 press_pin 原本 Paddle 的畫法：
         灰色底座 + 疊在底座正上方的彩色手臂（手臂沒按壓時筆直站著，跟底座
-        拼起來看像同一根直立的桿子），按壓確認的那一瞬間手臂繞著『底座頂端』
+        拼起來看像同一根直立的桿子），手臂隨四指下彎幅度繞著『底座頂端』
         這個支點往中線那一側甩開，兩側都是往中線甩、不是各自固定往同一個
         絕對方向甩（不然其中一側看起來會是往外甩，跟另一側方向不對稱）。
         手把位置放在判定區邊界，跟三角形進入判定區的位置對齊；左右 side 對應
         到哪隻手直接依畫面方向對應，不做鏡像交叉（見檔頭說明）。
         """
-        now = time.time()
         half_w = w / 2.0
         hit_zone_px = w * cfg.PADDLE_OFFSET_RATIO
         pw, ph = cfg.PADDLE_WIDTH, cfg.PADDLE_HEIGHT
@@ -441,9 +442,9 @@ class Game4Scene(Scene):
         # 三角形飛行的高度對齊。
         base_top_y = spawn_y
 
-        for x, color, landmarks, flash_until, side in (
-            (half_w - hit_zone_px, cfg.LEFT_HAND_COLOR, self.left_landmarks, self.left_flash_until, "left"),
-            (half_w + hit_zone_px, cfg.RIGHT_HAND_COLOR, self.right_landmarks, self.right_flash_until, "right"),
+        for x, color, landmarks, side in (
+            (half_w - hit_zone_px, cfg.LEFT_HAND_COLOR, self.left_landmarks, "left"),
+            (half_w + hit_zone_px, cfg.RIGHT_HAND_COLOR, self.right_landmarks, "right"),
         ):
             base_rect = pygame.Rect(int(x - pw / 2), int(base_top_y), pw, ph)
             pygame.draw.rect(surface, (180, 180, 180), base_rect)
@@ -451,17 +452,17 @@ class Game4Scene(Scene):
             if landmarks is None:
                 continue
 
-            angle = 0.0
-            if now < flash_until:
-                # 左手把往右甩（正角度=逆時針=頂端往左，所以左手把要用負角度
-                # 才會往中線/右邊甩）、右手把往左甩，兩側都是甩向中線。
-                angle = -cfg.PADDLE_SWING_DEG if side == "left" else cfg.PADDLE_SWING_DEG
-
-            arm_surf = pygame.Surface((pw, ph), pygame.SRCALPHA)
-            arm_surf.fill(color)
-            rotated = pygame.transform.rotate(arm_surf, angle)
-            arm_rect = rotated.get_rect(midbottom=(int(x), int(base_top_y)))
-            surface.blit(rotated, arm_rect)
+            posture = self.hand_postures.get(side, {})
+            angle = math.radians(posture.get("paddle_angle", 0.0))
+            direction = 1 if side == "left" else -1
+            dx, dy = direction * math.sin(angle), -math.cos(angle)
+            # Rotate around the base, not the rotated image's bounding box.
+            nx, ny = -dy * pw / 2, dx * pw / 2
+            tip_x, tip_y = x + dx * ph, base_top_y + dy * ph
+            if not posture.get("valid", False):
+                color = (100, 100, 110)
+            pygame.draw.polygon(surface, color, [(x-nx, base_top_y-ny),
+                (x+nx, base_top_y+ny), (tip_x+nx, tip_y+ny), (tip_x-nx, tip_y-ny)])
 
     def _draw_playing(self, surface, w, h):
         spawn_y = int(h * cfg.SPAWN_Y_RATIO)

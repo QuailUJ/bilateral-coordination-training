@@ -1,4 +1,5 @@
 """Render saved arcade states and mark exact scoring locations."""
+import math
 import pygame
 from ui.theme import COLOR_PANEL, COLOR_TEXT, COLOR_TEXT_MUTED, get_font
 from ui.training_panels import training_layout, draw_panel
@@ -39,7 +40,17 @@ def draw_arcade_replay(replay, surface):
     for side, point in frame.get("paddles", {}).items():
         x, y = replay._to_canvas_px(point)
         color = (90, 200, 230) if side == "left" else (240, 150, 60)
-        pygame.draw.rect(surface, color, (x-7, y-28, 14, 56))
+        posture = frame.get("postures", {}).get(side, {})
+        if "paddle_angle" in posture:
+            angle = math.radians(posture["paddle_angle"])
+            direction = 1 if side == "left" else -1
+            pygame.draw.rect(surface, (180, 180, 180), (x-7, y, 14, 28))
+            if not posture.get("valid", False):
+                color = (100, 100, 110)
+            pygame.draw.line(surface, color, (x, y),
+                (x + direction*math.sin(angle)*28, y-math.cos(angle)*28), 14)
+        else:
+            pygame.draw.rect(surface, color, (x-7, y-28, 14, 56))
         if frame["presses"][side]:
             pygame.draw.circle(surface, COLOR_TEXT, (x, y), 23, width=2)
     for obj in frame["objects"]:

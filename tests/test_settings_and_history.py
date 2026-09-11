@@ -1021,3 +1021,36 @@ def test_triangle_press_is_immediate_on_entry_and_after_tracking_gap(ctx, monkey
         timer.now += .03
         feed(flex)
         assert scene.left_press_confirmed == (flex == 60)
+
+
+def test_triangle_paddles_move_before_scoring_threshold_and_stay_down(ctx, monkeypatch):
+    import numpy as np
+    from test_straight_hand import anatomical_pose
+    from games.game4_bilateral_press import scene as module
+    from common.arcade_recording import record_triangles
+    scene = module.Game4Scene(); scene.on_enter(ctx)
+    scene.selected_level = dict(scene.level_options[0]); scene._start_playing(0)
+    timer = SimpleNamespace(now=1.0)
+    monkeypatch.setattr(game_time, 'time', lambda: timer.now)
+    def feed(flex):
+        result = SimpleNamespace(hand_landmarks=[anatomical_pose(flex)]*2,
+            handedness=[[SimpleNamespace(category_name=side)] for side in ('Left', 'Right')])
+        scene._process_frame(np.zeros((480, 640, 3), np.uint8), None, result)
+        surface = pygame.Surface(ctx.screen.get_size())
+        scene._draw_hand_paddles(surface, surface.get_width(), 350)
+        return pygame.surfarray.array3d(surface)
+    upright = feed(0)
+    partial = feed(25)
+    assert not scene.left_press_confirmed and not scene.right_press_confirmed
+    assert all(20 < p['paddle_angle'] < 30 for p in scene.hand_postures.values())
+    assert np.any(upright != partial)
+    down = feed(60)
+    assert scene.left_press_confirmed and scene.right_press_confirmed
+    timer.now = 2.0  # The previous 0.15 second animation timeout has expired.
+    surface = pygame.Surface(ctx.screen.get_size())
+    scene._draw_hand_paddles(surface, surface.get_width(), 350)
+    assert np.array_equal(pygame.surfarray.array3d(surface), down)
+    record_triangles(scene, timer.now)
+    snapshot = scene.arcade_recording.data['frames'][-1]['postures']
+    feed(0)
+    assert snapshot['left']['paddle_angle'] == module.cfg.PADDLE_SWING_DEG
