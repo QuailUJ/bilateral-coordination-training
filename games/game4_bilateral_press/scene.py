@@ -85,8 +85,7 @@ def _is_hand_pressed(landmarks, aspect=1.0) -> bool:
 
 
 def _press_posture(landmarks, aspect=1.0):
-    return hand_posture(landmarks, aspect, straight_min=cfg.STRAIGHT_MIN_DEG,
-                        press_max=cfg.MCP_PRESS_MAX_DEG, sync_spread=cfg.MCP_SYNC_SPREAD_DEG)
+    return hand_posture(landmarks, aspect)
 
 
 class Triangle:
@@ -175,12 +174,7 @@ class Game4Scene(Scene):
         return None
 
     def update(self, ctx, dt):
-        # 按壓「確認」是一次性的脈衝，只能在偵測到的當下那個 pygame 影格生效。
-        # 攝影機硬體幀率(~30fps)比 pygame 的畫面更新率(~60fps)低，很多影格根本
-        # 沒有新的攝影機畫面可處理；如果 confirmed 旗標留著不重置，沒有新畫面
-        # 的那幾格會沿用上一次的舊值，導致按壓事件「延續」到下一顆剛好飄進判定
-        # 區的三角形，變成沒真的按也算命中。每幀一開始就重置，確保只有真的跑過
-        # _process_frame() 且這幀剛好偵測到按壓，才會是 True。
+        # 每次新偵測到有效下壓即可判定；沒有新攝影機結果時不沿用舊按壓得分。
         self.left_press_confirmed = False
         self.right_press_confirmed = False
 
@@ -228,26 +222,15 @@ class Game4Scene(Scene):
         if self.state != "playing":
             return
 
-        # Release and press use separate thresholds to avoid repeated pulses
-        # from angle jitter. Brief invalid observations cannot score.
-        now = time.time()
+        # Use the same four-finger posture check as the saber. A currently
+        # pressed hand is active immediately, without a release/arming step.
         for side, landmarks in (("left", left_landmarks), ("right", right_landmarks)):
             posture = _press_posture(landmarks, w / h)
             self.hand_postures[side] = posture
-            if now - self._press_last_valid[side] > cfg.PRESS_TRACKING_GRACE_SEC:
-                self._press_armed[side] = False
-            pulse = posture["pressed"] and self._press_armed[side]
             if posture["valid"]:
-                self._press_last_valid[side] = now
-                if posture["pressed"]:
-                    self._press_armed[side] = False
-                elif min(posture["mcp"]) >= cfg.MCP_RELEASE_MIN_DEG:
-                    self._press_armed[side] = True
-                posture["reason"] = ("已按下，請抬回" if posture["pressed"] else
-                                     "已準備，請往下按" if self._press_armed[side] else "請先抬回準備")
-            posture["press_confirmed"] = pulse
-            posture["press_armed"] = self._press_armed[side]
-            setattr(self, side + "_press_confirmed", pulse)
+                posture["reason"] = "已按下" if posture["pressed"] else "四指伸直，請一起往下彎"
+            posture["press_confirmed"] = posture["pressed"]
+            setattr(self, side + "_press_confirmed", posture["pressed"])
 
         now = time.time()
         if self.left_press_confirmed:
@@ -272,8 +255,6 @@ class Game4Scene(Scene):
         self.triangles = []
         self.max_possible_score = 0
         self._pair_id = 0
-        self._press_armed = {"left": False, "right": False}
-        self._press_last_valid = {"left": float("-inf"), "right": float("-inf")}
         self.hand_postures = {}
         self.combo_state = scoring.ComboState()
         self.left_flash_until = 0.0

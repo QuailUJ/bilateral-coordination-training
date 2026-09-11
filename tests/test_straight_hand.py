@@ -30,6 +30,13 @@ def test_missing_palm_direction_is_not_a_press():
     assert not hand_posture(pts, 4/3)['pressed']
 
 
+@pytest.mark.parametrize('flex', [0, 30, 50, 60, 90])
+def test_triangle_uses_identical_posture_to_saber(flex):
+    from games.game4_bilateral_press.scene import _press_posture
+    points = anatomical_pose(flex)
+    assert _press_posture(points, 4/3) == hand_posture(points, 4/3)
+
+
 def pose(pressed=False):
     pts = [SimpleNamespace(x=0.0, y=-1.0, z=0.0) for _ in range(21)]
     for i, x in zip((5, 9, 13, 17), (-.15, -.05, .05, .15)):
