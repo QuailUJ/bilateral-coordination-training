@@ -155,10 +155,13 @@ def _mirrored_xy(landmark):
     return (1.0 - landmark.x, landmark.y)
 
 
-def _hand_pointing_angle(landmarks):
+def _hand_pointing_angle(landmarks, aspect=1.0):
+    def point(index):
+        x, y = _mirrored_xy(landmarks[index])
+        return x * aspect, y
     return motion.hand_pointing_angle_deg(
-        _mirrored_xy(landmarks[_MID_BASE]), _mirrored_xy(landmarks[_MID_TIP]),
-        _mirrored_xy(landmarks[_PINKY_BASE]), _mirrored_xy(landmarks[_PINKY_TIP]),
+        point(_MID_BASE), point(_MID_TIP),
+        point(_PINKY_BASE), point(_PINKY_TIP),
     )
 
 
@@ -278,12 +281,15 @@ class LightSword(pygame.sprite.Sprite):
             self.active = False
             self._rebuild()
             return
-        pointing_up = motion.is_within_active_arc(target_angle_deg, cfg.ACTIVE_ARC_MIN_DEG, cfg.ACTIVE_ARC_MAX_DEG)
-        lo, hi = getattr(self, "allowed_arc", (cfg.ACTIVE_ARC_MIN_DEG, cfg.ACTIVE_ARC_MAX_DEG))
+        # atan2 wraps the left horizontal from +180 to -180. Keep that
+        # boundary continuous before clamping each sword to its own side.
+        target_angle_deg = (target_angle_deg + 90) % 360 - 90
+        pointing_up = motion.is_within_active_arc(target_angle_deg, cfg.SABER_ARC_MIN_DEG, cfg.SABER_ARC_MAX_DEG)
+        lo, hi = getattr(self, "allowed_arc", (cfg.SABER_ARC_MIN_DEG, cfg.SABER_ARC_MAX_DEG))
         target_angle_deg = max(lo, min(hi, target_angle_deg))
         alpha = 1 - (1 - cfg.ANGLE_SMOOTH_LERP) ** (max(0, dt) * 30)
         self.angle_deg = max(lo, min(hi, motion.smooth_angle_towards(self.angle_deg, target_angle_deg, alpha)))
-        self.active = self._allow_scoring and pointing_up and motion.is_within_active_arc(self.angle_deg, cfg.ACTIVE_ARC_MIN_DEG, cfg.ACTIVE_ARC_MAX_DEG)
+        self.active = self._allow_scoring and pointing_up and motion.is_within_active_arc(self.angle_deg, cfg.SABER_ARC_MIN_DEG, cfg.SABER_ARC_MAX_DEG)
         self._rebuild()
 
     def _rebuild(self):
@@ -369,8 +375,8 @@ class Game3Scene(Scene):
         self.left_sword = LightSword(self.pivot, saber_length, (255, 140, 90), red_sword_scaled)   # 右手控制
         self.right_sword = LightSword(self.pivot, saber_length, (90, 170, 255), blue_sword_scaled)   # 左手控制
 
-        self.left_sword.allowed_arc = (90.0, cfg.ACTIVE_ARC_MAX_DEG)
-        self.right_sword.allowed_arc = (cfg.ACTIVE_ARC_MIN_DEG, 90.0)
+        self.left_sword.allowed_arc = (90.0, cfg.SABER_ARC_MAX_DEG)
+        self.right_sword.allowed_arc = (cfg.SABER_ARC_MIN_DEG, 90.0)
         self.hand_postures = {}
         self.last_hand_frame_at = 0.0
         self.last_frame_id = -1
@@ -476,7 +482,8 @@ class Game3Scene(Scene):
                 posture = hand_posture(landmarks, w / h)
                 self.hand_postures[side] = posture
                 if landmarks is not None and all(math.isfinite(p.x) and math.isfinite(p.y) for p in landmarks):
-                    sword.set_target(_hand_pointing_angle(landmarks), allow_scoring=posture["valid"])
+                    posture["pointing_angle"] = _hand_pointing_angle(landmarks, w / h)
+                    sword.set_target(posture["pointing_angle"], allow_scoring=posture["valid"])
                 else:
                     sword.set_target(None, False)
 
@@ -661,7 +668,9 @@ class Game3Scene(Scene):
         surface.blit(msg, msg.get_rect(centerx=w // 2, top=90))
         for i, side in enumerate(("left", "right")):
             posture = self.hand_postures.get(side, {"reason": "等待入鏡"})
-            label = get_font(18).render(("左手：" if side == "left" else "右手：") + posture["reason"], True, COLOR_TEXT)
+            sword = self.right_sword if side == "left" else self.left_sword
+            name = "左手／藍劍" if side == "left" else "右手／橘劍"
+            label = get_font(18).render(f"{name} {sword.angle_deg:.0f}°：{posture['reason']}", True, COLOR_TEXT)
             surface.blit(label, (PADDING, 165 + i * 26))
 
     def _draw_result(self, surface, w, h):

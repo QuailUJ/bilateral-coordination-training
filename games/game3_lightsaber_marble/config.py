@@ -11,6 +11,8 @@ games/game3_lightsaber_marble/config.py - 遊戲二「光劍」可調參數
 # ---- 攻擊弧幾何／控制 ----
 ACTIVE_ARC_MIN_DEG = 15.0
 ACTIVE_ARC_MAX_DEG = 165.0
+SABER_ARC_MIN_DEG = 0.0
+SABER_ARC_MAX_DEG = 180.0
 
 ANGLE_SMOOTH_LERP = 0.5  # 手指指向角度平滑趨近目標值的插值係數，越大反應越快但越抖動
 
