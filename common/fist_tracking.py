@@ -21,6 +21,7 @@ class FistIdentityTracker(HandIdentityTracker):
         super().__init__(tip_id=0)
         self.validation_indices = PALM_IDS
         self.last_seen = {}
+        self.reacquire_blocked = set()
         self.enabled_side = enabled_side
         self.required_hands = 1 if enabled_side else 2
 
@@ -29,7 +30,24 @@ class FistIdentityTracker(HandIdentityTracker):
         # Both continuity gates use the palm, never an occluded fingertip.
         return palm_center(landmarks, mirrored=False)
 
+    def _movement_limits(self, label, now):
+        # More elapsed time permits more real motion; identity-conflict and
+        # overlap gates still apply before any point can enter the trail.
+        elapsed = max(0.0, now - self.last_seen.get(label, now))
+        limit = min(0.40, 0.18 + 2.0 * max(0.0, elapsed - 1.0/30))
+        return limit, limit
+
+    def _required_stable_frames(self, label, now):
+        # A recent known hand need not stand still for another three frames.
+        if (label not in self.reacquire_blocked and label in self.last_seen
+                and 0 <= now-self.last_seen[label] <= LOSS_GRACE_S):
+            return 1
+        return self.stable_frames
+
     def update(self, result, now):
+        for label, status in self.status.items():
+            if status["reason"] in ("identity_conflict", "duplicate_label", "hands_overlap", "invalid_coordinates", "wrist_jump", "tip_jump"):
+                self.reacquire_blocked.add(label)
         if self.enabled_side:
             selected = [(lm, cat) for lm, cat in zip(result.hand_landmarks or [], result.handedness or [])
                         if cat and cat[0].category_name == self.enabled_side]
@@ -76,4 +94,5 @@ class FistIdentityTracker(HandIdentityTracker):
         for label, landmarks in zip(("Left", "Right"), tracked):
             if landmarks is not None:
                 self.last_seen[label] = now
+                self.reacquire_blocked.discard(label)
         return tracked

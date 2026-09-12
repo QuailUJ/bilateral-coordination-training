@@ -26,6 +26,12 @@ class HandIdentityTracker:
     def _point(landmarks, index):
         return (landmarks[index].x, landmarks[index].y)
 
+    def _movement_limits(self, label, now):
+        return 0.18, 0.20
+
+    def _required_stable_frames(self, label, now):
+        return self.stable_frames
+
     def update(self, result, now):
         self.status = {side: {"reason": "no_detection", "accepted": False} for side in ("Left", "Right")}
         if self.last_update_t is not None and now - self.last_update_t > 0.35:
@@ -88,13 +94,15 @@ class HandIdentityTracker:
             other = "Right" if label == "Left" else "Left"
             if label in self.positions:
                 distance = math.dist(position, self.positions[label])
-                if distance > 0.18:
+                wrist_limit, tip_limit = self._movement_limits(label, now)
+                self.status[label].update(displacement=distance, movement_limit=wrist_limit)
+                if distance > wrist_limit:
                     self.status[label]["reason"] = "wrist_jump"
                     continue
                 if other in self.positions and math.dist(position, self.positions[other]) < distance + 0.025:
                     self.status[label]["reason"] = "identity_conflict"
                     continue
-                if label in self.active and math.dist(tip, self.tips[label]) > 0.20:
+                if label in self.active and math.dist(tip, self.tips[label]) > tip_limit:
                     self.status[label]["reason"] = "tip_jump"
                     continue
             eligible.add(label)
@@ -102,7 +110,7 @@ class HandIdentityTracker:
                 previous, count = self.pending.get(label, (position, 0))
                 count = count + 1 if math.dist(previous, position) < 0.06 else 1
                 self.pending[label] = (position, count)
-                if count < self.stable_frames:
+                if count < self._required_stable_frames(label, now):
                     self.status[label]["reason"] = "stabilizing"
                     continue
             accepted[label] = landmarks

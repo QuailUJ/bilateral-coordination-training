@@ -14,6 +14,46 @@ def test_occluded_middle_tip_does_not_reject_palm():
     assert palm_center(left) == (0.75, 0.5)
 
 
+def test_fast_fist_motion_with_slower_camera_is_accepted():
+    tracker = FistIdentityTracker()
+    left, right = acquire(tracker)
+    moved = hand(.25, .75)
+    assert tracker.update(result(("Left", moved), ("Right", right)), .16)[0] is moved
+    assert tracker.status['Left']['displacement'] == pytest.approx(.25)
+    assert tracker.status['Left']['movement_limit'] > .25
+
+
+def test_same_jump_at_high_frame_rate_is_still_rejected():
+    tracker = FistIdentityTracker()
+    left, right = acquire(tracker)
+    assert tracker.update(result(("Left", hand(.25, .75)), ("Right", right)), .07)[0] is None
+    assert tracker.status['Left']['reason'] == 'wrist_jump'
+
+
+def test_short_gap_does_not_require_three_stationary_frames():
+    tracker = FistIdentityTracker()
+    left, right = acquire(tracker)
+    tracker.update(result(("Right", right)), .09)
+    moved = hand(.25, .6)
+    assert tracker.update(result(("Left", moved), ("Right", right)), .12)[0] is moved
+
+
+def test_fast_motion_cannot_move_into_other_hands_identity():
+    tracker = FistIdentityTracker()
+    left, right = acquire(tracker)
+    assert tracker.update(result(("Left", hand(.6)), ("Right", right)), .3)[0] is None
+    assert tracker.status['Left']['reason'] == 'identity_conflict'
+
+
+def test_conflict_requires_stable_reacquisition():
+    tracker = FistIdentityTracker()
+    left, right = acquire(tracker)
+    tracker.update(result(("Left", right)), .09)
+    assert tracker.update(result(("Left", left), ("Right", right)), .12)[0] is None
+    assert tracker.update(result(("Left", left), ("Right", right)), .15)[0] is None
+    assert tracker.update(result(("Left", left), ("Right", right)), .18)[0] is left
+
+
 def test_one_side_recovers_far_from_old_anchor_while_other_keeps_tracking():
     tracker = FistIdentityTracker()
     left, right = acquire(tracker)

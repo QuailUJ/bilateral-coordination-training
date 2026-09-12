@@ -1,5 +1,11 @@
 # 雙側協調訓練遊戲
 
+> **MID 中版**：以 `37674c0` 為基準，只調整遊戲零的快速移動與短暫斷訊恢復。請先看 [本次調整與測試說明](TRACKING_NOTES.md)。下方為基準版本原有操作說明。
+
+**[下載 MID 懶人包](https://github.com/QuailUJ/bilateral-coordination-training/archive/refs/heads/MID.zip)** · [MID 更新紀錄](CHANGELOG.md) · [三版比較](https://github.com/QuailUJ/bilateral-coordination-training#readme)
+
+請登入有私人儲存庫權限的帳號，下載並完整解壓到獨立的 MID 資料夾，第一次雙擊 `install.bat`，安裝完再雙擊 `start_game.bat`。不要和 OLD、NEW 同時開啟攝影機。
+
 使用 **Python、Pygame、OpenCV 與 MediaPipe** 的攝影機互動訓練平台，提供拳頭、手指、光劍及按壓遊戲，以及使用者管理、成績紀錄和回放。
 
 目前以 **Windows 10／11、64 位元 Python 3.11** 為主要執行環境。開發機使用 Python 3.11.9；其他作業系統尚未完成實機驗證。

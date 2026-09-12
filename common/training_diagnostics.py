@@ -41,6 +41,10 @@ def start_diagnostics(scene, now):
                                  tracking_landmarks=list(PALM_IDS), reference_kind="observed_top_reversal",
                                  algorithm="upper_reversal_circle_v1")
         scene.diagnostics["circle_direction_convention"] = "display_clockwise_top_right_bottom_left"
+        scene.diagnostics["parameters"]["identity"].update(
+            movement_rule="elapsed_time_fist_v1", movement_base=0.18,
+            movement_max=0.40, movement_growth_per_second=2.0,
+            movement_reference_seconds=1/30, recent_reacquire_seconds=LOSS_GRACE_S)
         scene.diagnostics["parameters"]["fist"] = dict(reacquire_s=REACQUIRE_S, loss_grace_s=LOSS_GRACE_S,
                                                        calibration_s=0, axis_reversal_on=0.012, axis_calibration_s=0)
         scene.diagnostics["parameters"]["circle_trial"] = dict(reversal=.012, minimum_span=.06,
