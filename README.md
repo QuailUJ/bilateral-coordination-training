@@ -1,5 +1,19 @@
 # 雙側協調訓練遊戲
 
+## OLD 舊版下載與使用
+
+**[下載 OLD 懶人包](https://github.com/QuailUJ/bilateral-coordination-training/archive/refs/heads/OLD.zip)** · [查看三版比較](https://github.com/QuailUJ/bilateral-coordination-training#readme)
+
+本分支保留 `37674c0` 的原程式，這次僅補版本標示與更新紀錄，沒有修改遊戲。供舊版比較及測試後路，不代表已驗證所有電腦的效能。
+
+1. 登入有此私人儲存庫權限的 GitHub 帳號，下載並完整解壓到獨立的 `OLD` 資料夾。
+2. 第一次雙擊 `install.bat` 安裝環境，完成後雙擊 `start_game.bat`。
+3. 不要與 MID、NEW 同時啟動，以免占用同一攝影機。以下內容是 OLD 的操作說明。
+
+[OLD 更新紀錄](CHANGELOG.md)
+
+**檢查狀態：** 檔案與語法檢查通過；完整自動測試在設定畫面有底層存取錯誤，單獨重跑該測試通過。原程式保持不變，詳見更新紀錄。
+
 使用 **Python、Pygame、OpenCV 與 MediaPipe** 的攝影機互動訓練平台，提供拳頭、手指、光劍及按壓遊戲，以及使用者管理、成績紀錄和回放。
 
 目前以 **Windows 10／11、64 位元 Python 3.11** 為主要執行環境。開發機使用 Python 3.11.9；其他作業系統尚未完成實機驗證。
